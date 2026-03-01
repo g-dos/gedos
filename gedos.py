@@ -4,6 +4,8 @@ GEDOS — entrypoint.
 Starts the Telegram bot and runs until interrupted.
 """
 
+__version__ = "0.1.0"
+
 import logging
 import sys
 
