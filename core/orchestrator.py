@@ -5,12 +5,6 @@ GEDOS Orchestrator — LangGraph task planning and routing to Terminal, GUI, Web
 import logging
 from typing import Any, Literal, Optional
 
-from agents.terminal_agent import run_shell, TerminalResult
-from agents.gui_agent import click_button, get_screen_summary
-from agents.web_agent import navigate, search_google, get_page_content, WebResult
-from tools.ax_tree import get_ax_tree
-from core.llm import complete as llm_complete
-
 logger = logging.getLogger(__name__)
 
 AgentKind = Literal["terminal", "gui", "web", "llm"]
@@ -29,12 +23,10 @@ def _route_task(task: str) -> AgentKind:
 
 
 def _run_terminal(task: str) -> dict[str, Any]:
-    """Execute task via terminal agent."""
+    """Execute task via terminal agent (lazy import)."""
+    from agents.terminal_agent import run_shell, TerminalResult
+
     r = run_shell(task)
-    return {"success": r.success, "result": _format_terminal(r), "agent_used": "terminal"}
-
-
-def _format_terminal(r: TerminalResult) -> str:
     out = (r.stdout or "").strip() or "(no output)"
     err = (r.stderr or "").strip()
     if len(out) > 3000:
@@ -42,11 +34,13 @@ def _format_terminal(r: TerminalResult) -> str:
     msg = out
     if err:
         msg += f"\n\nstderr:\n{err[:300]}"
-    return msg
+    return {"success": r.success, "result": msg, "agent_used": "terminal"}
 
 
 def _run_gui(task: str) -> dict[str, Any]:
-    """Execute task via GUI agent (click button or report screen)."""
+    """Execute task via GUI agent (lazy import)."""
+    from agents.gui_agent import click_button, get_screen_summary
+
     low = task.lower()
     btn_name = None
     for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ",
@@ -71,7 +65,9 @@ def _run_gui(task: str) -> dict[str, Any]:
 
 
 def _run_web(task: str) -> dict[str, Any]:
-    """Execute task via web agent."""
+    """Execute task via web agent (lazy import)."""
+    from agents.web_agent import navigate, search_google, WebResult
+
     low = task.lower()
     if "google" in low or "buscar" in low or "search" in low:
         for p in ("buscar ", "busca ", "search ", "pesquisar "):
@@ -93,7 +89,7 @@ def _run_web(task: str) -> dict[str, Any]:
     return _web_result_to_dict(r)
 
 
-def _web_result_to_dict(r: WebResult) -> dict[str, Any]:
+def _web_result_to_dict(r) -> dict[str, Any]:
     if not r.success:
         return {"success": False, "result": r.message, "agent_used": "web"}
     parts = [r.message]
@@ -108,7 +104,9 @@ def _web_result_to_dict(r: WebResult) -> dict[str, Any]:
 
 
 def _run_llm(task: str) -> dict[str, Any]:
-    """Execute task via LLM (answer question)."""
+    """Execute task via LLM (lazy import)."""
+    from core.llm import complete as llm_complete
+
     reply = llm_complete(task, max_tokens=1024)
     return {"success": True, "result": reply, "agent_used": "llm"}
 

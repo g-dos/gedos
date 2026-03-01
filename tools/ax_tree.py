@@ -5,6 +5,7 @@ Extracts structured UI data (buttons, fields, menus, windows) as JSON without vi
 
 import json
 import logging
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,10 @@ try:
 except ImportError:
     _ATOMACOS_AVAILABLE = False
     NativeUIElement = None  # type: ignore
+
+# Simple cache: {app_name: (timestamp, tree_dict)}
+_AX_TREE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CACHE_TTL_SECONDS = 5.0
 
 
 def _element_to_dict(element: Any) -> Optional[dict[str, Any]]:
@@ -74,10 +79,11 @@ def get_frontmost_app_name() -> Optional[str]:
         return None
 
 
-def get_ax_tree(max_buttons: int = 50, max_text_fields: int = 20) -> dict[str, Any]:
+def get_ax_tree(max_buttons: int = 50, max_text_fields: int = 20, use_cache: bool = True) -> dict[str, Any]:
     """
     Get structured AX tree for the frontmost application.
     Returns a dict with app name, windows, buttons, and text fields (for JSON/Telegram).
+    Uses a 5-second cache for static apps to reduce overhead.
     """
     result: dict[str, Any] = {
         "app": None,
@@ -92,13 +98,21 @@ def get_ax_tree(max_buttons: int = 50, max_text_fields: int = 20) -> dict[str, A
 
     try:
         app = NativeUIElement.getFrontmostApp()
-        result["app"] = app.getLocalizedName()
+        app_name = app.getLocalizedName()
+        result["app"] = app_name
     except AXErrorAPIDisabled:
         result["error"] = "Accessibility API disabled. Enable in System Preferences > Security & Privacy > Accessibility."
         return result
     except (AXError, ValueError) as e:
         result["error"] = str(e)
         return result
+
+    # Check cache
+    if use_cache and app_name in _AX_TREE_CACHE:
+        cached_ts, cached_tree = _AX_TREE_CACHE[app_name]
+        if time.time() - cached_ts < _CACHE_TTL_SECONDS:
+            logger.debug("AX Tree cache hit for %s", app_name)
+            return cached_tree
 
     try:
         # Windows
@@ -125,6 +139,11 @@ def get_ax_tree(max_buttons: int = 50, max_text_fields: int = 20) -> dict[str, A
     except Exception as e:
         result["error"] = str(e)
 
+    # Update cache
+    if use_cache and app_name:
+        _AX_TREE_CACHE[app_name] = (time.time(), result)
+        logger.debug("AX Tree cached for %s", app_name)
+
     return result
 
 
@@ -150,3 +169,10 @@ def find_button_by_title(title_substring: str) -> Optional[dict[str, Any]]:
     except Exception as e:
         logger.warning("find_button_by_title: %s", e)
     return None
+
+
+def clear_ax_tree_cache() -> None:
+    """Clear the AX Tree cache (for testing or manual refresh)."""
+    global _AX_TREE_CACHE
+    _AX_TREE_CACHE.clear()
+    logger.info("AX Tree cache cleared")
