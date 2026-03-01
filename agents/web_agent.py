@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from core.config import get_agent_config
+from core.retry import retry_with_backoff
+
 logger = logging.getLogger(__name__)
 
 _BROWSER = None
@@ -39,7 +42,8 @@ def _get_browser():
             _BROWSER = pw.chromium.launch(headless=True)
             _CONTEXT = _BROWSER.new_context()
             _PAGE = _CONTEXT.new_page()
-            _PAGE.set_default_timeout(30000)
+            cfg = get_agent_config("web")
+            _PAGE.set_default_timeout(cfg.get("timeout", 30000))
             logger.info("Web agent: Playwright browser started")
         except Exception as e:
             logger.exception("Web agent: failed to start browser: %s", e)
@@ -47,8 +51,8 @@ def _get_browser():
     return _BROWSER, _CONTEXT, _PAGE
 
 
-def navigate(url: str, timeout_ms: Optional[int] = 30000) -> WebResult:
-    """Navigate to URL. Ensures url has scheme."""
+def navigate(url: str, timeout_ms: Optional[int] = None, max_retries: Optional[int] = None) -> WebResult:
+    """Navigate to URL with retry on transient network failures."""
     if not url.strip():
         return WebResult(success=False, message="Empty URL.")
     if not url.startswith(("http://", "https://")):
@@ -56,15 +60,21 @@ def navigate(url: str, timeout_ms: Optional[int] = 30000) -> WebResult:
     browser, _, page = _get_browser()
     if not page:
         return WebResult(success=False, message="Playwright not available. Install: pip install playwright && playwright install chromium")
-    try:
-        page.goto(url, timeout=timeout_ms or 30000)
+
+    cfg = get_agent_config("web")
+    t = timeout_ms or cfg.get("timeout", 30000)
+    retries = max_retries if max_retries is not None else cfg.get("max_retries", 3)
+
+    def _attempt():
+        page.goto(url, timeout=t)
         return WebResult(
-            success=True,
-            message="Page loaded.",
-            url=page.url,
-            title=page.title(),
+            success=True, message="Page loaded.",
+            url=page.url, title=page.title(),
             content_preview=page.content()[:500] if page.content() else None,
         )
+
+    try:
+        return retry_with_backoff(_attempt, max_attempts=retries, base_delay=1.0, label=f"navigate({url[:60]})")
     except Exception as e:
         logger.warning("navigate %s: %s", url, e)
         return WebResult(success=False, message=str(e), url=url)
@@ -82,13 +92,7 @@ def get_page_content(max_chars: int = 10000) -> WebResult:
         text = body.inner_text() if body.count() else ""
         if len(text) > max_chars:
             text = text[:max_chars] + "\n... (truncated)"
-        return WebResult(
-            success=True,
-            message="Content retrieved.",
-            url=url,
-            title=title,
-            content_preview=text,
-        )
+        return WebResult(success=True, message="Content retrieved.", url=url, title=title, content_preview=text)
     except Exception as e:
         return WebResult(success=False, message=str(e))
 

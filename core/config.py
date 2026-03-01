@@ -78,3 +78,12 @@ def log_level() -> str:
     """Logging level (e.g. INFO, DEBUG)."""
     config = load_config()
     return (config.get("logging") or {}).get("level", "INFO")
+
+
+def get_agent_config(agent_name: str) -> dict:
+    """Return agent-specific config (timeout, max_retries) with defaults."""
+    config = load_config()
+    agents = config.get("agents") or {}
+    defaults = {"max_retries": agents.get("max_retries", 3)}
+    specific = agents.get(agent_name) or {}
+    return {**defaults, **specific}

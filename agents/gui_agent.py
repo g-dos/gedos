@@ -6,6 +6,8 @@ Finds elements via AX Tree and performs clicks / typing.
 import logging
 from typing import Optional
 
+from core.config import get_agent_config
+from core.retry import retry_with_backoff
 from tools.ax_tree import find_button_by_title, get_ax_tree
 from tools.mouse import click_at_center, move, click
 from tools import keyboard
@@ -13,16 +15,25 @@ from tools import keyboard
 logger = logging.getLogger(__name__)
 
 
-def click_button(title_substring: str) -> bool:
+def click_button(title_substring: str, max_retries: Optional[int] = None) -> bool:
     """
     Find a button in the frontmost app whose title contains title_substring,
-    then click at its center. Returns True if found and clicked.
+    then click at its center. Retries on failure (AX Tree may need time).
     """
-    el = find_button_by_title(title_substring)
-    if not el or "frame" not in el:
-        logger.warning("click_button: no button found for %r", title_substring)
+    cfg = get_agent_config("gui")
+    retries = max_retries if max_retries is not None else cfg.get("max_retries", 3)
+
+    def _attempt() -> bool:
+        el = find_button_by_title(title_substring)
+        if not el or "frame" not in el:
+            raise LookupError(f"Button not found: {title_substring!r}")
+        return click_at_center(el["frame"])
+
+    try:
+        return retry_with_backoff(_attempt, max_attempts=retries, base_delay=0.5, label=f"click_button({title_substring!r})")
+    except LookupError:
+        logger.warning("click_button: no button found for %r after %d attempts", title_substring, retries)
         return False
-    return click_at_center(el["frame"])
 
 
 def get_screen_summary() -> dict:
