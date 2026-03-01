@@ -36,10 +36,12 @@ def load_config() -> dict[str, Any]:
     if token := os.getenv("TELEGRAM_BOT_TOKEN"):
         config.setdefault("telegram", {})["bot_token"] = token
 
-    for key in ("LLM_PROVIDER", "OLLAMA_MODEL", "OLLAMA_BASE_URL"):
-        env_key = key.lower()
+    llm = config.setdefault("llm", {})
+    if v := os.getenv("LLM_PROVIDER"):
+        llm["provider"] = v
+    for key in ("OLLAMA_MODEL", "OLLAMA_BASE_URL"):
         if value := os.getenv(key):
-            config.setdefault("llm", {})[env_key] = value
+            llm[key.lower()] = value
 
     return config
 
@@ -62,7 +64,7 @@ def get_llm_config() -> dict[str, Any]:
     return {
         "provider": llm.get("provider", "ollama"),
         "model": llm.get("model", "llama3.3"),
-        "base_url": llm.get("base_url", "http://localhost:11434"),
+        "base_url": llm.get("base_url") or llm.get("ollama_base_url", "http://localhost:11434"),
     }
 
 
