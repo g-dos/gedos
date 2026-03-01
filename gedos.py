@@ -74,6 +74,12 @@ def main() -> int:
         console.print(f"[red bold]Error:[/] {e}")
         return 1
 
+    # Validate API keys before starting
+    from core.security import validate_api_keys
+    if not validate_api_keys(config):
+        console.print("[red bold]Error:[/] Missing required API keys. Check .env file.")
+        return 1
+
     if args.mode:
         config.setdefault("modes", {})["pilot"] = args.mode == "pilot"
         config.setdefault("modes", {})["copilot"] = args.mode == "copilot"
