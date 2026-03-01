@@ -11,6 +11,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TIMEOUT = 30
+
 
 @dataclass
 class TerminalResult:
@@ -25,7 +27,7 @@ class TerminalResult:
 def run_command(
     command: str,
     cwd: Optional[str] = None,
-    timeout_seconds: Optional[int] = 60,
+    timeout_seconds: Optional[int] = None,
 ) -> TerminalResult:
     """
     Execute a shell command safely. Uses shlex to split the command string.
@@ -46,7 +48,7 @@ def run_command(
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=timeout_seconds,
+            timeout=timeout_seconds or DEFAULT_TIMEOUT,
         )
         out = proc.stdout or ""
         err = proc.stderr or ""
@@ -60,12 +62,22 @@ def run_command(
             command=command,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("Command timed out: %s", command[:80])
+        t = timeout_seconds or DEFAULT_TIMEOUT
+        logger.warning("Command timed out after %ss: %s", t, command[:80])
         return TerminalResult(
             success=False,
             stdout="",
-            stderr="Command timed out.",
+            stderr=f"Comando excedeu o tempo limite ({t}s).",
             return_code=-1,
+            command=command,
+        )
+    except FileNotFoundError:
+        logger.warning("Command not found: %s", command[:80])
+        return TerminalResult(
+            success=False,
+            stdout="",
+            stderr=f"Comando não encontrado: {shlex.split(command)[0]}",
+            return_code=127,
             command=command,
         )
     except Exception as e:
@@ -73,17 +85,22 @@ def run_command(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=str(e),
+            stderr=f"Erro ao executar comando: {e}",
             return_code=-1,
             command=command,
         )
 
 
-def run_shell(command: str, cwd: Optional[str] = None) -> TerminalResult:
+def run_shell(
+    command: str,
+    cwd: Optional[str] = None,
+    timeout_seconds: Optional[int] = None,
+) -> TerminalResult:
     """
     Execute command via system shell (e.g. for pipelines and redirections).
     Prefer run_command for single commands when possible.
     """
+    t = timeout_seconds or DEFAULT_TIMEOUT
     try:
         proc = subprocess.run(
             command,
@@ -91,7 +108,7 @@ def run_shell(command: str, cwd: Optional[str] = None) -> TerminalResult:
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=t,
         )
         return TerminalResult(
             success=proc.returncode == 0,
@@ -104,7 +121,7 @@ def run_shell(command: str, cwd: Optional[str] = None) -> TerminalResult:
         return TerminalResult(
             success=False,
             stdout="",
-            stderr="Command timed out.",
+            stderr=f"Comando excedeu o tempo limite ({t}s).",
             return_code=-1,
             command=command,
         )
@@ -112,7 +129,7 @@ def run_shell(command: str, cwd: Optional[str] = None) -> TerminalResult:
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=str(e),
+            stderr=f"Erro ao executar comando: {e}",
             return_code=-1,
             command=command,
         )

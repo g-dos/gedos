@@ -69,13 +69,19 @@ def _format_ax_tree(tree: dict) -> str:
 
 
 def _format_terminal_result(r: TerminalResult) -> str:
-    out = (r.stdout or "").strip() or "(no output)"
+    out = (r.stdout or "").strip() or "(sem output)"
     err = (r.stderr or "").strip()
     if len(out) > 3500:
         out = out[:3500] + "\n… (truncado)"
-    status = "✅" if r.success else "❌"
-    msg = f"{status} {r.command[:80]}\n\n{out}"
-    if err:
+    if r.success:
+        msg = f"✅ {r.command[:80]}\n\n{out}"
+    elif r.return_code == 127:
+        msg = f"❌ Comando não encontrado: {r.command[:80]}"
+    elif "tempo limite" in err or "timed out" in err.lower():
+        msg = f"⏱ {err}"
+    else:
+        msg = f"❌ {r.command[:80]} (código {r.return_code})\n\n{out}"
+    if err and "tempo limite" not in err:
         msg += f"\n\nstderr:\n{err[:500]}"
     return msg
 
