@@ -336,9 +336,26 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.debug("Copilot job: %s", e)
 
 
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler — logs errors and recovers gracefully."""
+    logger.error("Telegram error: %s", context.error, exc_info=context.error)
+    if isinstance(update, Update) and update.message:
+        try:
+            await update.message.reply_text("An internal error occurred. Please try again.")
+        except Exception:
+            pass
+
+
 def build_application() -> Application:
     token = get_telegram_token()
-    app = Application.builder().token(token).build()
+    config = load_config()
+    telegram_cfg = config.get("telegram") or {}
+
+    builder = Application.builder().token(token)
+    builder.connect_timeout(telegram_cfg.get("connect_timeout", 30.0))
+    builder.read_timeout(telegram_cfg.get("read_timeout", 30.0))
+    builder.write_timeout(telegram_cfg.get("write_timeout", 30.0))
+    app = builder.build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -350,8 +367,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_error_handler(_error_handler)
 
-    config = load_config()
     copilot_cfg = config.get("copilot") or {}
     interval = copilot_cfg.get("check_interval", 10)
     if app.job_queue and interval > 0:
@@ -370,4 +387,9 @@ def run_polling() -> None:
         logger.warning("Pilot mode is disabled in config.")
     app = build_application()
     logger.info("Gedos Telegram bot starting (polling)...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        poll_interval=1.0,
+        timeout=30,
+    )
