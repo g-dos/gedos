@@ -46,7 +46,7 @@ ollama pull llama3.3
 ollama serve
 ```
 
-See the full guide at [docs/setup-ollama.md](docs/setup-ollama.md).
+See [ollama.com/download](https://ollama.com/download) for installation details.
 
 ---
 
