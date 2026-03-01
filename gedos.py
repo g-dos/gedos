@@ -95,6 +95,9 @@ def main() -> int:
 
     _banner(active_mode, config)
 
+    from core.memory_profiler import log_memory_stats
+    log_memory_stats("startup")
+
     from interfaces.telegram_bot import run_polling
     logger = logging.getLogger(__name__)
     logger.info("Gedos v%s starting (%s mode)", __version__, active_mode)

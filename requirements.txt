@@ -27,3 +27,4 @@ openai>=1.0.0
 
 # v0.6: CLI
 rich>=13.0.0
+psutil>=5.9.0
