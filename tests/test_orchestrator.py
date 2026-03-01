@@ -10,20 +10,20 @@ def test_route_terminal():
 
 
 def test_route_web():
-    assert _route_task("navegar para google.com") == "web"
-    assert _route_task("abrir https://github.com") == "web"
-    assert _route_task("buscar no google python") == "web"
+    assert _route_task("navigate to google.com") == "web"
+    assert _route_task("open https://github.com") == "web"
+    assert _route_task("search python") == "web"
 
 
 def test_route_gui():
-    assert _route_task("clicar no botão OK") == "gui"
-    assert _route_task("click no botao Cancel") == "gui"
+    assert _route_task("click the button OK") == "gui"
+    assert _route_task("click on Cancel") == "gui"
 
 
 def test_route_llm():
-    assert _route_task("perguntar o que é Python") == "llm"
-    assert _route_task("explique recursão") == "llm"
-    assert _route_task("/ask o que é recursão") == "llm"
+    assert _route_task("what is Python") == "llm"
+    assert _route_task("explain recursion") == "llm"
+    assert _route_task("/ask what is recursion") == "llm"
 
 
 def test_run_task_terminal():

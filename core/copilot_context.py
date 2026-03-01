@@ -11,23 +11,21 @@ from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
 
-# Substrings that suggest an error or risk (window titles, UI text)
 ERROR_RISK_KEYWORDS = (
     "error", "exception", "failed", "failure", "erro", "falha",
     "warning", "aviso", "traceback", "crash", "timeout",
 )
 
-# App name -> suggested action (lowercase match)
 APP_SUGGESTIONS = {
-    "terminal": "Quer que eu execute algum comando no Terminal?",
-    "iterm": "Quer que eu execute algum comando?",
-    "vscode": "Quer que eu faça commit, rode testes ou busque algo?",
-    "visual studio code": "Quer que eu faça commit, rode testes ou busque algo?",
-    "xcode": "Quer que eu rode o build ou faça algo no projeto?",
-    "cursor": "Quer que eu execute um comando ou faça commit?",
-    "safari": "Quer que eu pesquise ou abra uma página?",
-    "chrome": "Quer que eu pesquise ou abra uma página?",
-    "finder": "Quer que eu liste arquivos ou abra algo?",
+    "terminal": "Want me to run a command in Terminal?",
+    "iterm": "Want me to run a command?",
+    "vscode": "Want me to commit, run tests, or search for something?",
+    "visual studio code": "Want me to commit, run tests, or search for something?",
+    "xcode": "Want me to run the build or do something in the project?",
+    "cursor": "Want me to run a command or commit?",
+    "safari": "Want me to search or open a page?",
+    "chrome": "Want me to search or open a page?",
+    "finder": "Want me to list files or open something?",
 }
 
 
@@ -69,18 +67,16 @@ def analyze_context(
         if t:
             all_text.append(t.lower())
 
-    # Warnings: error-like content on screen
     if warnings_enabled and app_name:
         for kw in ERROR_RISK_KEYWORDS:
             if any(kw in t for t in all_text):
                 hints.append(CopilotHint(
                     kind="warning",
-                    message=f"Parece que há algo relacionado a \"{kw}\" na tela. Quer que eu ajude a investigar?",
+                    message=f"Detected something related to \"{kw}\" on screen. Want me to investigate?",
                     app=app_name,
                 ))
                 break
 
-    # Suggestions: based on active app
     if suggestions_enabled and app_name:
         app_lower = app_name.lower()
         for key, suggestion in APP_SUGGESTIONS.items():
@@ -92,10 +88,9 @@ def analyze_context(
                 ))
                 break
         else:
-            # Generic when app changed
             hints.append(CopilotHint(
                 kind="suggestion",
-                message=f"Você está em {app_name}. Quer que eu faça algo?",
+                message=f"You're in {app_name}. Want me to do something?",
                 app=app_name,
             ))
 

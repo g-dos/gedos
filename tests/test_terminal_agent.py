@@ -37,7 +37,7 @@ def test_run_shell_pipeline():
 def test_run_command_timeout():
     r = run_command("sleep 5", timeout_seconds=1)
     assert r.success is False
-    assert "tempo limite" in r.stderr.lower() or "timed out" in r.stderr.lower()
+    assert "timed out" in r.stderr.lower()
 
 
 def test_terminal_result_fields():

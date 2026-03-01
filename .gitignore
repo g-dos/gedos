@@ -24,3 +24,5 @@ build/
 # GEDOS
 gedos.db
 screenshot.png
+:memory:
+AGENTS.md

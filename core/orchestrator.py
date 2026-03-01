@@ -21,11 +21,10 @@ def _route_task(task: str) -> AgentKind:
     low = task.lower().strip()
     if any(low.startswith(p) for p in ("navegar", "navigate", "abrir ", "open ", "buscar no google", "search ")) or "http" in low or ".com" in low:
         return "web"
-    if any(k in low for k in ("clicar", "click", "botão", "botao")):
+    if any(k in low for k in ("clicar", "click", "botão", "botao", "button")):
         return "gui"
-    if any(k in low for k in ("perguntar", "ask", "o que é", "o que e", "explique", "resuma")) or low.startswith("/ask"):
+    if any(k in low for k in ("perguntar", "ask", "o que é", "o que e", "what is", "explique", "explain", "resuma", "summarize")) or low.startswith("/ask"):
         return "llm"
-    # Default: terminal for command-like or unknown
     return "terminal"
 
 
@@ -39,7 +38,7 @@ def _format_terminal(r: TerminalResult) -> str:
     out = (r.stdout or "").strip() or "(no output)"
     err = (r.stderr or "").strip()
     if len(out) > 3000:
-        out = out[:3000] + "\n… (truncado)"
+        out = out[:3000] + "\n... (truncated)"
     msg = out
     if err:
         msg += f"\n\nstderr:\n{err[:300]}"
@@ -50,7 +49,8 @@ def _run_gui(task: str) -> dict[str, Any]:
     """Execute task via GUI agent (click button or report screen)."""
     low = task.lower()
     btn_name = None
-    for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ", "clicar no ", "click no "):
+    for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ",
+                    "click the ", "click on ", "clicar no ", "click no ", "click "):
         if prefix in low:
             rest = low.split(prefix, 1)[-1].strip()
             btn_name = rest.split()[0] if rest else None
@@ -59,14 +59,14 @@ def _run_gui(task: str) -> dict[str, Any]:
         btn_name = task.split()[-1].strip(".,")
     if btn_name:
         ok = click_button(btn_name)
-        return {"success": ok, "result": "Cliquei no botão." if ok else f"Não encontrei botão '{btn_name}'.", "agent_used": "gui"}
+        return {"success": ok, "result": "Clicked the button." if ok else f"Button '{btn_name}' not found.", "agent_used": "gui"}
     summary = get_screen_summary()
     err = summary.get("error")
     if err:
         return {"success": False, "result": err, "agent_used": "gui"}
     app = summary.get("app") or "?"
     btns = summary.get("buttons") or []
-    lines = [f"App: {app}", "Botões: " + ", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15])]
+    lines = [f"App: {app}", "Buttons: " + ", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15])]
     return {"success": True, "result": "\n".join(lines), "agent_used": "gui"}
 
 
@@ -74,7 +74,6 @@ def _run_web(task: str) -> dict[str, Any]:
     """Execute task via web agent."""
     low = task.lower()
     if "google" in low or "buscar" in low or "search" in low:
-        # Extract query: "buscar X" or "search X"
         for p in ("buscar ", "busca ", "search ", "pesquisar "):
             if p in low:
                 q = low.split(p, 1)[-1].strip()
@@ -83,7 +82,6 @@ def _run_web(task: str) -> dict[str, Any]:
                     return _web_result_to_dict(r)
         r = search_google(task)
         return _web_result_to_dict(r)
-    # Treat as URL or "navegar para X"
     url = task.strip()
     for p in ("navegar para ", "navigate to ", "abrir ", "open "):
         if p in low:
@@ -100,11 +98,11 @@ def _web_result_to_dict(r: WebResult) -> dict[str, Any]:
         return {"success": False, "result": r.message, "agent_used": "web"}
     parts = [r.message]
     if r.title:
-        parts.append(f"Título: {r.title}")
+        parts.append(f"Title: {r.title}")
     if r.url:
         parts.append(f"URL: {r.url}")
     if r.content_preview:
-        preview = r.content_preview[:1500] + "…" if len(r.content_preview) > 1500 else r.content_preview
+        preview = r.content_preview[:1500] + "..." if len(r.content_preview) > 1500 else r.content_preview
         parts.append(preview)
     return {"success": True, "result": "\n".join(parts), "agent_used": "web"}
 
@@ -136,7 +134,7 @@ def run_task(task: str) -> dict[str, Any]:
             if attempt == 1:
                 logger.exception("Orchestrator execution failed")
                 return {"success": False, "result": str(e)[:500], "agent_used": agent}
-    return {"success": False, "result": "Agente desconhecido.", "agent_used": "none"}
+    return {"success": False, "result": "Unknown agent.", "agent_used": "none"}
 
 
 def run_task_with_langgraph(task: str) -> dict[str, Any]:

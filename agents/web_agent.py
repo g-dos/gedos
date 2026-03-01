@@ -50,17 +50,17 @@ def _get_browser():
 def navigate(url: str, timeout_ms: Optional[int] = 30000) -> WebResult:
     """Navigate to URL. Ensures url has scheme."""
     if not url.strip():
-        return WebResult(success=False, message="URL vazia.")
+        return WebResult(success=False, message="Empty URL.")
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     browser, _, page = _get_browser()
     if not page:
-        return WebResult(success=False, message="Playwright não disponível. Instale: pip install playwright && playwright install chromium")
+        return WebResult(success=False, message="Playwright not available. Install: pip install playwright && playwright install chromium")
     try:
         page.goto(url, timeout=timeout_ms or 30000)
         return WebResult(
             success=True,
-            message="Página carregada.",
+            message="Page loaded.",
             url=page.url,
             title=page.title(),
             content_preview=page.content()[:500] if page.content() else None,
@@ -74,17 +74,17 @@ def get_page_content(max_chars: int = 10000) -> WebResult:
     """Get current page URL, title, and text content."""
     _, _, page = _get_browser()
     if not page:
-        return WebResult(success=False, message="Nenhuma página aberta.")
+        return WebResult(success=False, message="No page open.")
     try:
         url = page.url
         title = page.title()
         body = page.locator("body")
         text = body.inner_text() if body.count() else ""
         if len(text) > max_chars:
-            text = text[:max_chars] + "\n… (truncado)"
+            text = text[:max_chars] + "\n... (truncated)"
         return WebResult(
             success=True,
-            message="Conteúdo obtido.",
+            message="Content retrieved.",
             url=url,
             title=title,
             content_preview=text,
@@ -97,10 +97,10 @@ def click_selector(selector: str) -> WebResult:
     """Click element matching CSS selector."""
     _, _, page = _get_browser()
     if not page:
-        return WebResult(success=False, message="Nenhuma página aberta.")
+        return WebResult(success=False, message="No page open.")
     try:
         page.click(selector, timeout=5000)
-        return WebResult(success=True, message=f"Clicado: {selector}", url=page.url)
+        return WebResult(success=True, message=f"Clicked: {selector}", url=page.url)
     except Exception as e:
         return WebResult(success=False, message=str(e))
 
@@ -109,10 +109,10 @@ def type_selector(selector: str, text: str) -> WebResult:
     """Type text into element matching selector."""
     _, _, page = _get_browser()
     if not page:
-        return WebResult(success=False, message="Nenhuma página aberta.")
+        return WebResult(success=False, message="No page open.")
     try:
         page.fill(selector, text, timeout=5000)
-        return WebResult(success=True, message=f"Preenchido: {selector}", url=page.url)
+        return WebResult(success=True, message=f"Filled: {selector}", url=page.url)
     except Exception as e:
         return WebResult(success=False, message=str(e))
 
@@ -121,13 +121,13 @@ def screenshot(path: Optional[str] = None) -> WebResult:
     """Take screenshot of current page. Returns path if path provided."""
     _, _, page = _get_browser()
     if not page:
-        return WebResult(success=False, message="Nenhuma página aberta.")
+        return WebResult(success=False, message="No page open.")
     try:
         if not path:
             root = Path(__file__).resolve().parent.parent
             path = str(root / "screenshot.png")
         page.screenshot(path=path)
-        return WebResult(success=True, message="Screenshot salvo.", screenshot_path=path, url=page.url)
+        return WebResult(success=True, message="Screenshot saved.", screenshot_path=path, url=page.url)
     except Exception as e:
         return WebResult(success=False, message=str(e))
 

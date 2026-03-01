@@ -1,10 +1,10 @@
-# Contribuindo com o Gedos
+# Contributing to Gedos
 
-Obrigado pelo interesse em contribuir! Este guia explica como configurar o ambiente, as regras de código e como enviar um Pull Request.
+Thanks for your interest in contributing! This guide covers how to set up the environment, code rules, and how to submit a Pull Request.
 
 ---
 
-## 1. Clonar e rodar localmente
+## 1. Clone and run locally
 
 ```bash
 git clone https://github.com/g-dos/gedos.git
@@ -14,31 +14,31 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### Configurar variáveis de ambiente
+### Set up environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edite `.env` e defina pelo menos `TELEGRAM_BOT_TOKEN` (obtenha com [@BotFather](https://t.me/BotFather)).
+Edit `.env` and set at least `TELEGRAM_BOT_TOKEN` (get one from [@BotFather](https://t.me/BotFather)).
 
-### Rodar
+### Run
 
 ```bash
 python gedos.py
 ```
 
-### Rodar os testes
+### Run the tests
 
 ```bash
 pytest tests/ -v
 ```
 
-Todos os 22 testes devem passar antes de enviar qualquer PR.
+All 22 tests must pass before submitting any PR.
 
-### Ollama (opcional)
+### Ollama (optional)
 
-Para usar o LLM local, instale e inicie o Ollama:
+To use the local LLM, install and start Ollama:
 
 ```bash
 brew install ollama
@@ -46,21 +46,21 @@ ollama pull llama3.3
 ollama serve
 ```
 
-Veja o guia completo em [docs/setup-ollama.md](docs/setup-ollama.md).
+See the full guide at [docs/setup-ollama.md](docs/setup-ollama.md).
 
 ---
 
-## 2. Regras de código
+## 2. Code rules
 
 ### Python
 
 - **Python 3.12+**
-- **Type hints** em todas as funções e métodos
-- **Docstrings** em todos os métodos públicos
-- Sem imports não utilizados
-- Sem valores hardcoded — tudo via `config.py`
+- **Type hints** on all functions and methods
+- **Docstrings** on all public methods
+- No unused imports
+- No hardcoded values — everything goes through `config.py`
 
-### Estrutura
+### Structure
 
 ```
 core/          — config, memory, orchestrator, LLM, copilot
@@ -68,40 +68,40 @@ agents/        — terminal, GUI, web
 interfaces/    — telegram bot
 tools/         — AX tree, mouse, keyboard
 tests/         — pytest smoke tests
-docs/          — documentação adicional
+docs/          — additional documentation
 ```
 
-### Formatação
+### Formatting
 
-- 4 espaços de indentação
-- Linhas com no máximo 120 caracteres
-- Strings com aspas duplas
-- f-strings quando necessário
+- 4 spaces indentation
+- Lines up to 120 characters
+- Double-quoted strings
+- f-strings when appropriate
 
 ---
 
 ## 3. Semantic Commits
 
-Todos os commits devem seguir o padrão de commit semântico:
+All commits must follow the semantic commit convention:
 
-| Prefixo | Quando usar | Exemplo |
+| Prefix | When to use | Example |
 |---|---|---|
-| `feat` | Nova funcionalidade | `feat: add /screenshot command` |
-| `fix` | Correção de bug | `fix: terminal timeout not respected` |
-| `docs` | Documentação | `docs: add Ollama setup guide` |
-| `refactor` | Refatoração sem mudar comportamento | `refactor: extract routing logic` |
-| `test` | Testes | `test: add orchestrator routing tests` |
-| `chore` | Manutenção, deps, versão | `chore: bump to v0.5.0` |
+| `feat` | New feature | `feat: add /screenshot command` |
+| `fix` | Bug fix | `fix: terminal timeout not respected` |
+| `docs` | Documentation | `docs: add Ollama setup guide` |
+| `refactor` | Refactor without behavior change | `refactor: extract routing logic` |
+| `test` | Tests | `test: add orchestrator routing tests` |
+| `chore` | Maintenance, deps, version | `chore: bump to v0.5.0` |
 
-### Formato
+### Format
 
 ```
-<tipo>: <descrição curta>
+<type>: <short description>
 
-<corpo opcional — explique o "porquê", não o "o quê">
+<optional body — explain the "why", not the "what">
 ```
 
-### Exemplos
+### Examples
 
 ```
 feat: add web scraping to /web command
@@ -119,68 +119,68 @@ from being sent to same user within 60 seconds.
 
 ---
 
-## 4. Como enviar um Pull Request
+## 4. How to submit a Pull Request
 
-### Passo a passo
+### Step by step
 
-1. **Fork** o repositório no GitHub
-2. **Clone** o seu fork:
+1. **Fork** the repository on GitHub
+2. **Clone** your fork:
    ```bash
-   git clone https://github.com/SEU-USER/gedos.git
+   git clone https://github.com/YOUR-USER/gedos.git
    cd gedos
    ```
-3. **Crie uma branch** a partir de `main`:
+3. **Create a branch** from `main`:
    ```bash
-   git checkout -b feat/minha-feature
+   git checkout -b feat/my-feature
    ```
-4. **Faça suas mudanças** seguindo as regras de código acima
-5. **Rode os testes**:
+4. **Make your changes** following the code rules above
+5. **Run the tests**:
    ```bash
    pytest tests/ -v
    ```
-6. **Commit** com mensagem semântica:
+6. **Commit** with a semantic message:
    ```bash
-   git commit -m "feat: minha nova feature"
+   git commit -m "feat: my new feature"
    ```
-7. **Push** para o seu fork:
+7. **Push** to your fork:
    ```bash
-   git push origin feat/minha-feature
+   git push origin feat/my-feature
    ```
-8. **Abra um PR** no GitHub apontando para `main`
+8. **Open a PR** on GitHub targeting `main`
 
-### Checklist do PR
+### PR checklist
 
-- [ ] Testes passando (`pytest tests/ -v`)
-- [ ] Commit semântico
-- [ ] Type hints em funções novas
-- [ ] Docstrings em métodos públicos
-- [ ] Sem secrets no código (API keys vão no `.env`)
-- [ ] Não quebra Pilot Mode nem Copilot Mode
+- [ ] Tests passing (`pytest tests/ -v`)
+- [ ] Semantic commit message
+- [ ] Type hints on new functions
+- [ ] Docstrings on public methods
+- [ ] No secrets in code (API keys go in `.env`)
+- [ ] Does not break Pilot Mode or Copilot Mode
 
-### O que evitar
+### What to avoid
 
-- Não adicione dependências cloud ao core — Gedos é local first
-- Não use screenshots como método primário de leitura de tela — AX Tree primeiro
-- Não hardcode valores — use `config.py`
-- Não commite `.env` ou credenciais
+- Don't add cloud dependencies to core — Gedos is local first
+- Don't use screenshots as the primary screen reading method — AX Tree first
+- Don't hardcode values — use `config.py`
+- Don't commit `.env` or credentials
 
 ---
 
-## 5. Reportando bugs
+## 5. Reporting bugs
 
-Abra uma [issue](https://github.com/g-dos/gedos/issues) com:
+Open an [issue](https://github.com/g-dos/gedos/issues) with:
 
-1. O que você fez (comando/ação)
-2. O que esperava acontecer
-3. O que aconteceu de fato
-4. Versão do Gedos (`python gedos.py --version` ou veja `gedos.py`)
+1. What you did (command/action)
+2. What you expected to happen
+3. What actually happened
+4. Gedos version (`python gedos.py --version` or check `gedos.py`)
 5. macOS version
 
 ---
 
-## Dúvidas?
+## Questions?
 
-Abra uma issue ou entre em contato via Telegram.
+Open an issue or reach out via Telegram.
 
 ---
 

@@ -28,15 +28,11 @@ from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
 
-# In-memory task state
 _current_task: Optional[str] = None
 _task_status: str = "idle"
 
-# Copilot: user_id -> True when copilot is on for that user
 _copilot_active: dict[int, bool] = {}
-# Last known app name per user (for "app changed" suggestion)
 _last_app_per_user: dict[int, str] = {}
-# Last hint message sent per user (to avoid duplicate)
 _last_copilot_message_per_user: dict[int, str] = {}
 
 _SHELL_SAFE_PREFIXES = (
@@ -56,32 +52,32 @@ def _looks_like_shell_command(payload: str) -> bool:
 def _format_ax_tree(tree: dict) -> str:
     err = tree.get("error")
     if err:
-        return f"Erro: {err}"
+        return f"Error: {err}"
     app = tree.get("app") or "?"
     lines = [f"App: {app}"]
     for w in (tree.get("windows") or [])[:5]:
-        title = (w.get("title") or "").strip() or "(sem título)"
-        lines.append(f"  Janela: {title}")
+        title = (w.get("title") or "").strip() or "(untitled)"
+        lines.append(f"  Window: {title}")
     btns = tree.get("buttons") or []
     if btns:
-        lines.append("Botões: " + ", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15]))
+        lines.append("Buttons: " + ", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15]))
     return "\n".join(lines)
 
 
 def _format_terminal_result(r: TerminalResult) -> str:
-    out = (r.stdout or "").strip() or "(sem output)"
+    out = (r.stdout or "").strip() or "(no output)"
     err = (r.stderr or "").strip()
     if len(out) > 3500:
-        out = out[:3500] + "\n… (truncado)"
+        out = out[:3500] + "\n... (truncated)"
     if r.success:
         msg = f"✅ {r.command[:80]}\n\n{out}"
     elif r.return_code == 127:
-        msg = f"❌ Comando não encontrado: {r.command[:80]}"
-    elif "tempo limite" in err or "timed out" in err.lower():
+        msg = f"❌ Command not found: {r.command[:80]}"
+    elif "timed out" in err.lower():
         msg = f"⏱ {err}"
     else:
-        msg = f"❌ {r.command[:80]} (código {r.return_code})\n\n{out}"
-    if err and "tempo limite" not in err:
+        msg = f"❌ {r.command[:80]} (code {r.return_code})\n\n{out}"
+    if err and "timed out" not in err.lower():
         msg += f"\n\nstderr:\n{err[:500]}"
     return msg
 
@@ -96,19 +92,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
     welcome = (
-        "Olá, sou o Gedos. Seu agente autônomo no Mac.\n\n"
-        "**Pilot Mode** — Envie uma tarefa e eu executo.\n"
-        "**Copilot Mode** — /copilot on — sugestões proativas.\n\n"
-        "Comandos:\n"
-        "• /task <descrição> — Tarefa para execução\n"
-        "• /status — Status da tarefa\n"
-        "• /stop — Parar execução\n"
-        "• /copilot on|off — Modo Copilot\n"
-        "• /memory — Histórico de tarefas\n"
-        "• /web <url> — Navegar na web\n"
-        "• /ask <pergunta> — Perguntar ao LLM\n"
-        "• /ping — Health check\n"
-        "• /help — Lista de comandos"
+        "Hi, I'm Gedos. Your autonomous agent on Mac.\n\n"
+        "**Pilot Mode** — Send a task and I'll execute it.\n"
+        "**Copilot Mode** — /copilot on — proactive suggestions.\n\n"
+        "Commands:\n"
+        "- /task <description> — Run a task\n"
+        "- /status — Task status\n"
+        "- /stop — Stop execution\n"
+        "- /copilot on|off — Copilot Mode\n"
+        "- /memory — Task history\n"
+        "- /web <url> — Browse the web\n"
+        "- /ask <question> — Ask the LLM\n"
+        "- /ping — Health check\n"
+        "- /help — List commands"
     )
     await update.message.reply_text(welcome)
 
@@ -117,17 +113,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     help_text = (
-        "Comandos:\n"
-        "/start — Boas-vindas\n"
-        "/task <descrição> — Executar tarefa\n"
-        "/status — Status atual\n"
-        "/stop — Parar\n"
+        "Commands:\n"
+        "/start — Welcome\n"
+        "/task <description> — Run a task\n"
+        "/status — Current status\n"
+        "/stop — Stop\n"
         "/copilot on|off — Copilot Mode\n"
-        "/memory — Histórico de tarefas\n"
-        "/web <url> — Navegar\n"
-        "/ask <pergunta> — Perguntar ao LLM\n"
+        "/memory — Task history\n"
+        "/web <url> — Browse\n"
+        "/ask <question> — Ask the LLM\n"
         "/ping — Health check\n"
-        "/help — Esta mensagem"
+        "/help — This message"
     )
     await update.message.reply_text(help_text)
 
@@ -140,7 +136,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     payload = text[5:].strip() if text.lower().startswith("/task") else text
     if not payload:
-        await update.message.reply_text("Use: /task <descrição da tarefa>")
+        await update.message.reply_text("Usage: /task <task description>")
         return
 
     uid = _user_id(update)
@@ -148,9 +144,8 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _task_status = "running"
     logger.info("Task received: %s", payload[:100])
 
-    # AX Tree / list elements
     low = payload.lower()
-    if any(kw in low for kw in ("listar elementos", "elementos da tela", "elementos da janela", "ax tree", "o que você vê")):
+    if any(kw in low for kw in ("list elements", "screen elements", "listar elementos", "ax tree", "what do you see", "o que você vê")):
         _task_status = "idle"
         tree = get_ax_tree(max_buttons=25, max_text_fields=10)
         reply = _format_ax_tree(tree)
@@ -160,10 +155,10 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             memory_add_task(description=payload, status="completed", agent_used="gui", result=reply[:500])
         return
 
-    # Click button
     if "clicar" in low or "click" in low:
         btn_name = None
-        for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ", "clicar no ", "click no "):
+        for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ",
+                        "click the ", "click on ", "clicar no ", "click no ", "click "):
             if prefix in low:
                 rest = low.split(prefix, 1)[-1].strip()
                 btn_name = rest.split()[0] if rest else None
@@ -173,14 +168,13 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if btn_name:
             ok = click_button(btn_name)
             _task_status = "idle"
-            reply = "Cliquei no botão." if ok else f"Não encontrei botão '{btn_name}'."
+            reply = "Clicked the button." if ok else f"Button '{btn_name}' not found."
             await update.message.reply_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
                 memory_add_task(description=payload, status="completed", agent_used="gui", result=reply)
             return
 
-    # Shell command (fast path)
     if _looks_like_shell_command(payload):
         result = run_shell(payload)
         _task_status = "idle"
@@ -191,22 +185,21 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000])
         return
 
-    # Orchestrator (web, llm, or fallback terminal)
     try:
         out = run_task_with_langgraph(payload)
     except Exception as e:
         logger.exception("Orchestrator failed for task: %s", payload[:80])
         _task_status = "idle"
-        reply = f"Erro ao executar: {str(e)[:300]}"
+        reply = f"Execution error: {str(e)[:300]}"
         await update.message.reply_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
         return
     _task_status = "idle"
-    reply = out.get("result") or "Sem resultado."
+    reply = out.get("result") or "No result."
     if len(reply) > 4000:
-        reply = reply[:4000] + "\n… (truncado)"
+        reply = reply[:4000] + "\n... (truncated)"
     await update.message.reply_text(reply)
     if uid is not None:
         add_conversation(str(uid), payload, reply[:500])
@@ -219,9 +212,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     global _current_task, _task_status
     if _task_status == "idle" or not _current_task:
-        await update.message.reply_text("Nenhuma tarefa em execução.")
+        await update.message.reply_text("No task running.")
         return
-    status_msg = f"Status: {_task_status}\nTarefa: {_current_task[:150]}"
+    status_msg = f"Status: {_task_status}\nTask: {_current_task[:150]}"
     if len(_current_task) > 150:
         status_msg += "..."
     await update.message.reply_text(status_msg)
@@ -233,7 +226,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     _task_status = "stopped"
     logger.info("Stop requested")
-    await update.message.reply_text("Parada solicitada.")
+    await update.message.reply_text("Stop requested.")
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -252,10 +245,10 @@ async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.message.text.strip().lower()
     if " off" in text or text.endswith("off"):
         _copilot_active[uid] = False
-        await update.message.reply_text("Copilot Mode desligado.")
+        await update.message.reply_text("Copilot Mode off.")
     else:
         _copilot_active[uid] = True
-        await update.message.reply_text("Copilot Mode ligado. Vou monitorar o contexto e sugerir quando fizer sentido.")
+        await update.message.reply_text("Copilot Mode on. I'll monitor context and suggest when relevant.")
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -264,11 +257,11 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     tasks = get_recent_tasks(limit=10)
     if not tasks:
-        await update.message.reply_text("Nenhuma tarefa no histórico.")
+        await update.message.reply_text("No tasks in history.")
         return
-    lines = ["Últimas tarefas:"]
+    lines = ["Recent tasks:"]
     for t in tasks:
-        lines.append(f"• [{t.status}] {t.description[:50]}…" if len(t.description) > 50 else f"• [{t.status}] {t.description}")
+        lines.append(f"- [{t.status}] {t.description[:50]}..." if len(t.description) > 50 else f"- [{t.status}] {t.description}")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -279,32 +272,32 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     url = text[5:].strip() if text.lower().startswith("/web") else text
     if not url:
-        await update.message.reply_text("Use: /web <url>")
+        await update.message.reply_text("Usage: /web <url>")
         return
     from agents.web_agent import navigate
     r = navigate(url)
     if r.success:
-        msg = f"Página carregada: {r.title or r.url}\n{r.url}"
+        msg = f"Page loaded: {r.title or r.url}\n{r.url}"
         if r.content_preview:
-            msg += "\n\n" + (r.content_preview[:500] + "…" if len(r.content_preview) > 500 else r.content_preview)
+            msg += "\n\n" + (r.content_preview[:500] + "..." if len(r.content_preview) > 500 else r.content_preview)
         await update.message.reply_text(msg)
     else:
-        await update.message.reply_text(f"Erro: {r.message}")
+        await update.message.reply_text(f"Error: {r.message}")
 
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ask LLM: /ask sua pergunta."""
+    """Ask the LLM: /ask your question."""
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
     question = text[4:].strip() if text.lower().startswith("/ask") else text
     if not question:
-        await update.message.reply_text("Use: /ask <pergunta>")
+        await update.message.reply_text("Usage: /ask <question>")
         return
     from core.llm import complete
     reply = complete(question, max_tokens=1024)
     if len(reply) > 4000:
-        reply = reply[:4000] + "\n… (truncado)"
+        reply = reply[:4000] + "\n... (truncated)"
     await update.message.reply_text(reply)
 
 

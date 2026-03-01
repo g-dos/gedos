@@ -67,7 +67,7 @@ def run_command(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=f"Comando excedeu o tempo limite ({t}s).",
+            stderr=f"Command timed out ({t}s).",
             return_code=-1,
             command=command,
         )
@@ -76,7 +76,7 @@ def run_command(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=f"Comando não encontrado: {shlex.split(command)[0]}",
+            stderr=f"Command not found: {shlex.split(command)[0]}",
             return_code=127,
             command=command,
         )
@@ -85,7 +85,7 @@ def run_command(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=f"Erro ao executar comando: {e}",
+            stderr=f"Command execution error: {e}",
             return_code=-1,
             command=command,
         )
@@ -121,7 +121,7 @@ def run_shell(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=f"Comando excedeu o tempo limite ({t}s).",
+            stderr=f"Command timed out ({t}s).",
             return_code=-1,
             command=command,
         )
@@ -129,7 +129,7 @@ def run_shell(
         return TerminalResult(
             success=False,
             stdout="",
-            stderr=f"Erro ao executar comando: {e}",
+            stderr=f"Command execution error: {e}",
             return_code=-1,
             command=command,
         )
