@@ -2,7 +2,7 @@
 
 > Your Mac. Working while you're not.
 
-Gedos is an open-source autonomous AI agent that runs on your Mac. It sees (AX Tree), clicks, runs commands, browses the web, and talks to you on Telegram — in **Pilot Mode** (autonomous tasks) or **Copilot Mode** (proactive suggestions and warnings while you work).
+Gedos is an open-source autonomous AI agent that runs on your Mac. It reads the screen (AX Tree), controls mouse and keyboard, runs terminal commands, browses the web, and talks to you on Telegram — in **Pilot Mode** (autonomous tasks) or **Copilot Mode** (proactive suggestions and warnings while you work).
 
 ## Demo
 
@@ -11,40 +11,88 @@ Gedos is an open-source autonomous AI agent that runs on your Mac. It sees (AX T
 > Fluxo: usuário envia `/task ls -la` no Telegram → Gedos executa → resultado enviado de volta.
 > Copilot Mode detecta contexto e envia sugestões proativas.
 
-## Quick start (v0.3)
+## Quick start
 
-1. **Clone and install**
-   ```bash
-   cd Gedos
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   playwright install chromium   # for Web Agent
-   ```
+### 1. Clone and install
 
-2. **Configure**
-   - Copy `.env.example` to `.env`
-   - Set `TELEGRAM_BOT_TOKEN` (from [@BotFather](https://t.me/BotFather))
-   - Optional: `LLM_PROVIDER=claude` or `openai` and API keys for cloud LLM (default: Ollama local)
+```bash
+git clone https://github.com/g-dos/gedos.git
+cd gedos
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+```
 
-3. **Run**
-   ```bash
-   python gedos.py
-   ```
+### 2. Configure
 
-4. **Use**
-   - `/start`, `/help` — commands
-   - `/task <descrição>` — run task (terminal, web, GUI, or LLM via Orchestrator)
-   - `/task ls`, `/task navegar para google.com`, `/task perguntar o que é Python`
-   - `/web <url>` — open URL in headless browser
-   - `/ask <pergunta>` — ask the LLM
-   - `/copilot on` | `/copilot off` — Copilot Mode (suggestions + warnings)
-   - `/memory` — recent tasks history
-   - `/ping` — health check
+```bash
+cp .env.example .env
+```
 
-**Requirements:** macOS (AX Tree + GUI), Python 3.12+. Ollama optional for local LLM.
+Edit `.env` and set at least `TELEGRAM_BOT_TOKEN` (get one from [@BotFather](https://t.me/BotFather)).
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+For local LLM, install Ollama — see [docs/setup-ollama.md](docs/setup-ollama.md) for a step-by-step guide.
 
----
+Alternatively, set `LLM_PROVIDER=claude` or `openai` with the corresponding API key in `.env`.
 
-*Built by [@g-dos](https://github.com/g-dos)*
+### 3. Run
+
+```bash
+python gedos.py
+```
+
+### 4. Use
+
+| Command | Description |
+|---|---|
+| `/start`, `/help` | List available commands |
+| `/task <description>` | Run a task (terminal, web, GUI, or LLM) |
+| `/web <url>` | Open URL in headless browser |
+| `/ask <question>` | Ask the LLM directly |
+| `/screen` | Show current screen elements (AX Tree) |
+| `/copilot on\|off` | Toggle Copilot Mode |
+| `/memory` | Recent task history |
+| `/status` | Current task status |
+| `/stop` | Stop running task |
+| `/ping` | Health check |
+
+**Examples:**
+
+```
+/task ls -la
+/task git status
+/task navegar para google.com
+/ask o que é Python?
+/copilot on
+```
+
+See [docs/examples.md](docs/examples.md) for 5 detailed usage examples.
+
+## Requirements
+
+- **macOS** (Accessibility API for AX Tree + GUI control)
+- **Python 3.12+**
+- **Ollama** (optional, for local LLM) — [setup guide](docs/setup-ollama.md)
+
+## Documentation
+
+| Doc | Description |
+|---|---|
+| [docs/setup-ollama.md](docs/setup-ollama.md) | Ollama installation and model recommendations |
+| [docs/examples.md](docs/examples.md) | 5 real usage examples with expected output |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute: setup, code style, PRs |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+
+## Running tests
+
+```bash
+pytest tests/ -v
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style rules, semantic commit conventions, and how to submit a PR.
+
+## License
+
+Open source. Built by [@g-dos](https://github.com/g-dos).
