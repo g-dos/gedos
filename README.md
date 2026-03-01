@@ -6,7 +6,10 @@ Gedos is an open-source autonomous AI agent that runs on your Mac. It sees (AX T
 
 ## Demo
 
-*Record a short screen capture showing: `/task ls`, `/copilot on`, and a Copilot suggestion — then add the GIF here or under `docs/demo.gif`.*
+![Gedos demo — Telegram → execute → report](docs/demo.gif)
+
+> Fluxo: usuário envia `/task ls -la` no Telegram → Gedos executa → resultado enviado de volta.
+> Copilot Mode detecta contexto e envia sugestões proativas.
 
 ## Quick start (v0.3)
 
