@@ -209,6 +209,11 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
 
+    uid = _user_id(update)
+    if uid is not None and not _check_rate_limit(uid):
+        await update.message.reply_text("⚠️ Rate limit exceeded. Max 10 commands per minute.")
+        return
+
     text = update.message.text.strip()
     payload = text[5:].strip() if text.lower().startswith("/task") else text
     if not payload:
