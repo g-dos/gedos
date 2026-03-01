@@ -2,6 +2,36 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.0] — 2026-03
+
+### Added
+- **Documentation overhaul**: complete README with logo, architecture diagram, modes, commands, LLM config
+- **docs/setup-ollama.md**: full Ollama setup guide with install steps, recommended models, troubleshooting
+- **docs/examples.md**: 5 real usage examples with exact Telegram commands and expected outputs
+- **docs/demo-placeholder.md**: placeholder for real demo GIF (to be recorded before v1.0)
+- **Integration tests**: pilot flow, copilot flow, orchestrator routing (`tests/integration/`)
+- **CHECKLIST.md**: pre-launch checklist for v0.9.0 RC validation
+- **Security baseline**:
+  - Input sanitization (`core/security.py`) — blocks dangerous shell patterns, validates URLs
+  - Rate limiting (10 commands per minute per user) in Telegram bot
+  - API key validation on startup — fail fast with clear error if keys missing
+  - Logging audit — confirmed no secrets logged anywhere
+- **README badges**: License, Python version, Ollama LLM
+- **README sections**: Quick Start, Commands table, Architecture, Modes (Pilot vs Copilot), LLM Configuration, Tech Stack, Contributing, Roadmap
+
+### Changed
+- **README.md**: complete overhaul with `>gedos` logo, ASCII architecture diagram, command table, modes explained
+- **`gedos.py`**: validate API keys before starting bot
+- **`interfaces/telegram_bot.py`**: rate limiting applied to all commands
+
+### Security
+- Input sanitization for shell commands, URLs, and Telegram input
+- Rate limiting prevents abuse (10 commands/min per user)
+- API keys validated on startup
+- No API keys or tokens logged
+
+---
+
 ## [0.8.0] — 2026-03
 
 ### Added
