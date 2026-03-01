@@ -2,6 +2,21 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.4.0] — 2026-03
+
+### Added
+- **Pytest smoke tests**: config, memory, terminal_agent, orchestrator (22 tests)
+
+### Changed
+- **Terminal Agent**: default timeout lowered to 30s (was 60s), configurable via `timeout_seconds`
+- **Terminal Agent**: clearer error messages (Portuguese) for timeout, command-not-found, generic failure
+- **Telegram bot**: improved error formatting (distinct icons for timeout, not-found, generic errors)
+
+### Fixed
+- AGENTS.md Development Order checklist now reflects all completed items
+
+---
+
 ## [0.3.0] — 2025-03
 
 ### Added
