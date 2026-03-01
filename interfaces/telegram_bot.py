@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from core.config import get_telegram_token, pilot_enabled, load_config
+from core.copilot_context import analyze_context
 from core.memory import (
     add_conversation,
     add_task as memory_add_task,
@@ -33,8 +34,10 @@ _task_status: str = "idle"
 
 # Copilot: user_id -> True when copilot is on for that user
 _copilot_active: dict[int, bool] = {}
-# Last known app name per user (for simple "app changed" suggestion)
+# Last known app name per user (for "app changed" suggestion)
 _last_app_per_user: dict[int, str] = {}
+# Last hint message sent per user (to avoid duplicate)
+_last_copilot_message_per_user: dict[int, str] = {}
 
 _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
@@ -98,6 +101,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /memory — Histórico de tarefas\n"
         "• /web <url> — Navegar na web\n"
         "• /ask <pergunta> — Perguntar ao LLM\n"
+        "• /ping — Health check\n"
         "• /help — Lista de comandos"
     )
     await update.message.reply_text(welcome)
@@ -116,6 +120,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/memory — Histórico de tarefas\n"
         "/web <url> — Navegar\n"
         "/ask <pergunta> — Perguntar ao LLM\n"
+        "/ping — Health check\n"
         "/help — Esta mensagem"
     )
     await update.message.reply_text(help_text)
@@ -181,7 +186,17 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Orchestrator (web, llm, or fallback terminal)
-    out = run_task_with_langgraph(payload)
+    try:
+        out = run_task_with_langgraph(payload)
+    except Exception as e:
+        logger.exception("Orchestrator failed for task: %s", payload[:80])
+        _task_status = "idle"
+        reply = f"Erro ao executar: {str(e)[:300]}"
+        await update.message.reply_text(reply)
+        if uid is not None:
+            add_conversation(str(uid), payload, reply[:500])
+            memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
+        return
     _task_status = "idle"
     reply = out.get("result") or "Sem resultado."
     if len(reply) > 4000:
@@ -213,6 +228,12 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _task_status = "stopped"
     logger.info("Stop requested")
     await update.message.reply_text("Parada solicitada.")
+
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Health check: /ping."""
+    if update.message:
+        await update.message.reply_text("pong")
 
 
 async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -282,27 +303,36 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Job: when copilot is on for a user, check AX tree and send suggestions."""
+    """Job: full Copilot — analyze context, send suggestions and warnings."""
     try:
         config = load_config()
         copilot_cfg = config.get("copilot") or {}
-        if not copilot_cfg.get("suggestions", True):
+        suggestions_ok = copilot_cfg.get("suggestions", True)
+        warnings_ok = copilot_cfg.get("warnings", True)
+        if not suggestions_ok and not warnings_ok:
             return
-        app_name = get_ax_tree(max_buttons=2, max_text_fields=0).get("app") or ""
+        hints = analyze_context(warnings_enabled=warnings_ok, suggestions_enabled=suggestions_ok)
+        if not hints:
+            return
+        hint = next((h for h in hints if h.kind == "warning"), hints[0])
+        msg = f"Copilot: {hint.message}"
+        app_name = hint.app or ""
         for uid, active in list(_copilot_active.items()):
             if not active:
                 continue
-            last = _last_app_per_user.get(uid)
-            if last != app_name and app_name:
+            last_msg = _last_copilot_message_per_user.get(uid)
+            if last_msg == msg:
+                continue
+            last_app = _last_app_per_user.get(uid)
+            if hint.kind == "suggestion" and last_app == app_name:
+                continue
+            if app_name:
                 _last_app_per_user[uid] = app_name
-                if last:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=uid,
-                            text=f"Copilot: você está agora em {app_name}. Quer que eu faça algo?",
-                        )
-                    except Exception:
-                        pass
+            try:
+                await context.bot.send_message(chat_id=uid, text=msg)
+                _last_copilot_message_per_user[uid] = msg
+            except Exception:
+                pass
     except Exception as e:
         logger.debug("Copilot job: %s", e)
 
@@ -320,6 +350,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
+    app.add_handler(CommandHandler("ping", cmd_ping))
 
     config = load_config()
     copilot_cfg = config.get("copilot") or {}

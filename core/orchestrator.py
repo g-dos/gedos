@@ -121,18 +121,21 @@ def run_task(task: str) -> dict[str, Any]:
     """
     agent = _route_task(task)
     logger.info("Orchestrator routing task to %s: %s", agent, task[:80])
-    try:
-        if agent == "terminal":
-            return _run_terminal(task)
-        if agent == "gui":
-            return _run_gui(task)
-        if agent == "web":
-            return _run_web(task)
-        if agent == "llm":
-            return _run_llm(task)
-    except Exception as e:
-        logger.exception("Orchestrator execution failed")
-        return {"success": False, "result": str(e), "agent_used": agent}
+    for attempt in range(2):
+        try:
+            if agent == "terminal":
+                return _run_terminal(task)
+            if agent == "gui":
+                return _run_gui(task)
+            if agent == "web":
+                return _run_web(task)
+            if agent == "llm":
+                return _run_llm(task)
+        except Exception as e:
+            logger.warning("Orchestrator attempt %s failed: %s", attempt + 1, e)
+            if attempt == 1:
+                logger.exception("Orchestrator execution failed")
+                return {"success": False, "result": str(e)[:500], "agent_used": agent}
     return {"success": False, "result": "Agente desconhecido.", "agent_used": "none"}
 
 
