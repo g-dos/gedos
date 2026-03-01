@@ -2,6 +2,26 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.6.0] — 2026-03
+
+### Added
+- **Retry logic**: all agents (terminal, GUI, web) retry up to 3 times with exponential backoff on transient failures
+- **`core/retry.py`**: reusable `retry_with_backoff` utility
+- **Configurable agent timeouts**: `agents.terminal.timeout`, `agents.gui.timeout`, `agents.web.timeout` in `config.yaml`
+- **Telegram error handler**: global error handler logs errors and sends user-friendly message on failure
+- **Telegram connection resilience**: configurable `connect_timeout`, `read_timeout`, `write_timeout`; `drop_pending_updates` on startup
+- **Rich CLI**: colored startup banner with version, mode, and LLM info
+- **CLI flags**: `gedos --help`, `gedos --version` / `-V`, `gedos --mode pilot|copilot` / `-m`
+- **`rich`** added to dependencies
+
+### Changed
+- **Terminal Agent**: `run_command` and `run_shell` accept `max_retries` parameter, read defaults from config
+- **GUI Agent**: `click_button` retries via `retry_with_backoff` when AX Tree doesn't find button immediately
+- **Web Agent**: `navigate` retries on network failures with backoff
+- **Entrypoint**: rewritten with `argparse`, `rich` banner, graceful `KeyboardInterrupt` handling
+
+---
+
 ## [0.5.0] — 2026-03
 
 ### Added
