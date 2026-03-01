@@ -2,7 +2,7 @@
 # Secrets (e.g. TELEGRAM_BOT_TOKEN) come from .env
 # Version: Semver x.y.z (major.minor.patch)
 
-version: 0.1.0
+version: 0.2.0
 
 telegram:
   bot_token: ""  # Loaded from env TELEGRAM_BOT_TOKEN
@@ -12,9 +12,23 @@ llm:
   model: "llama3.3"
   base_url: "http://localhost:11434"
 
+memory:
+  database_path: "gedos.db"
+  retention_days: 30
+
 modes:
   pilot: true
-  copilot: false  # v0.2+
+  copilot: false
+
+copilot:
+  check_interval: 10
+  suggestions: true
+  warnings: true
+
+web:
+  browser: "chromium"
+  headless: true
+  timeout: 30000
 
 logging:
   level: "INFO"

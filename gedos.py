@@ -4,7 +4,7 @@ GEDOS — entrypoint.
 Starts the Telegram bot and runs until interrupted.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import logging
 import sys
@@ -28,7 +28,7 @@ def main() -> int:
         level=level,
     )
     logger = logging.getLogger(__name__)
-    logger.info("Gedos starting (Pilot Mode)")
+    logger.info("Gedos v%s starting (Pilot + Copilot)", __version__)
 
     run_polling()
     return 0

@@ -20,3 +20,7 @@ build/
 
 # OS
 .DS_Store
+
+# GEDOS
+gedos.db
+screenshot.png
