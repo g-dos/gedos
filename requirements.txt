@@ -1,0 +1,17 @@
+# GEDOS v0.1 — MVP dependencies
+# Python 3.12+
+
+# Telegram interface
+python-telegram-bot>=21.0.0
+
+# macOS Accessibility (AX Tree)
+atomacos>=3.0.0
+pyobjc-framework-ApplicationServices>=10.0.0
+pyobjc-framework-Cocoa>=10.0.0
+
+# Mouse and keyboard control (atomacos requires pyautogui<0.9.42)
+PyAutoGUI>=0.9,<0.9.42
+
+# Configuration
+pyyaml>=6.0.1
+python-dotenv>=1.0.0

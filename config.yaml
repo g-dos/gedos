@@ -1,0 +1,17 @@
+# GEDOS — User-facing configuration
+# Secrets (e.g. TELEGRAM_BOT_TOKEN) come from .env
+
+telegram:
+  bot_token: ""  # Loaded from env TELEGRAM_BOT_TOKEN
+
+llm:
+  provider: "ollama"
+  model: "llama3.3"
+  base_url: "http://localhost:11434"
+
+modes:
+  pilot: true
+  copilot: false  # v0.2+
+
+logging:
+  level: "INFO"
