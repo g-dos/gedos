@@ -63,7 +63,7 @@ def get_llm_config() -> dict[str, Any]:
     llm = config.get("llm") or {}
     return {
         "provider": llm.get("provider", "ollama"),
-        "model": llm.get("model", "llama3.3"),
+        "model": llm.get("model", "llama3.2"),
         "base_url": llm.get("base_url") or llm.get("ollama_base_url", "http://localhost:11434"),
     }
 
