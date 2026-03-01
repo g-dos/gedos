@@ -2,6 +2,39 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.8.0] — 2026-03
+
+### Added
+- **AX Tree cache**: 5-second TTL cache for static apps to reduce overhead when reading screen elements repeatedly
+- **LLM benchmark utility** (`core/llm_bench.py`): measure and compare response times for Ollama, Claude, OpenAI
+- **Memory profiler** (`core/memory_profiler.py`): detect memory leaks in long-running sessions, log stats on startup
+- **`psutil`**: added for runtime memory usage monitoring
+
+### Changed
+- **Lazy agent imports**: agents are imported only when needed, reducing startup time
+- **Orchestrator**: `_run_terminal`, `_run_gui`, `_run_web`, `_run_llm` use lazy imports instead of top-level imports
+- **Startup**: logs memory stats on launch for profiling
+
+---
+
+## [0.7.0] — 2026-03
+
+### Added
+- **Onboarding via `/start`**: first-time users see detailed welcome with mode explanations and quick start guide
+- **Mode-specific `/help`**: different output for Pilot vs Copilot modes with relevant commands and examples
+- **Progress updates**: long-running tasks send "⏳ Task started, executing..." and update on completion
+- **`/task cancel`**: gracefully interrupt running tasks mid-execution with cancellation checkpoints
+- **Rich tracebacks**: CLI displays formatted, colored error output instead of raw Python stack traces
+
+### Changed
+- **`/start`**: detects first-time vs returning users via memory history
+- **`/help`**: dynamic content based on active Copilot status
+- **`/stop`**: renamed internally to `/task cancel` behavior, provides clear feedback
+- **Task execution**: progress messages edited in-place to show results
+- **Error handling**: `rich.traceback` installed globally for better debugging
+
+---
+
 ## [0.6.0] — 2026-03
 
 ### Added
