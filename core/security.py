@@ -4,6 +4,7 @@ GEDOS security utilities — input sanitization and validation.
 
 import logging
 import re
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -80,3 +81,31 @@ def validate_telegram_input(text: str, max_length: int = 4000) -> Optional[str]:
         return None
     
     return text
+
+
+def validate_api_keys(config: dict) -> bool:
+    """
+    Validate that required API keys exist on startup.
+    Returns True if all required keys are present, False otherwise.
+    """
+    telegram_token = config.get("telegram", {}).get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    if not telegram_token:
+        logger.error("Missing TELEGRAM_BOT_TOKEN in config.yaml or .env")
+        return False
+    
+    llm_provider = config.get("llm", {}).get("provider", "ollama")
+    
+    if llm_provider == "claude":
+        claude_key = os.getenv("ANTHROPIC_API_KEY")
+        if not claude_key:
+            logger.error("LLM_PROVIDER=claude but ANTHROPIC_API_KEY not found in .env")
+            return False
+    elif llm_provider == "openai":
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            logger.error("LLM_PROVIDER=openai but OPENAI_API_KEY not found in .env")
+            return False
+    
+    logger.info("API keys validated successfully")
+    return True
+
