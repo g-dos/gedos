@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _current_task: Optional[str] = None
 _task_status: str = "idle"
+_task_cancelled: bool = False
 
 _copilot_active: dict[int, bool] = {}
 _last_app_per_user: dict[int, str] = {}
@@ -91,45 +92,112 @@ def _user_id(update: Update) -> Optional[int]:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
-    welcome = (
-        "Hi, I'm Gedos. Your autonomous agent on Mac.\n\n"
-        "**Pilot Mode** — Send a task and I'll execute it.\n"
-        "**Copilot Mode** — /copilot on — proactive suggestions.\n\n"
-        "Commands:\n"
-        "- /task <description> — Run a task\n"
-        "- /status — Task status\n"
-        "- /stop — Stop execution\n"
-        "- /copilot on|off — Copilot Mode\n"
-        "- /memory — Task history\n"
-        "- /web <url> — Browse the web\n"
-        "- /ask <question> — Ask the LLM\n"
-        "- /ping — Health check\n"
-        "- /help — List commands"
-    )
-    await update.message.reply_text(welcome)
+    uid = _user_id(update)
+    
+    # Check if first time user (no conversation history)
+    if uid is not None:
+        from core.memory import get_recent_conversations, init_db
+        init_db()
+        convos = get_recent_conversations(str(uid), limit=1)
+        is_first_time = len(convos) == 0
+    else:
+        is_first_time = True
+
+    if is_first_time:
+        # Onboarding flow for new users
+        welcome = (
+            "👋 Welcome to Gedos!\n\n"
+            "I'm your autonomous AI agent for macOS. I can execute terminal commands, "
+            "control your GUI, browse the web, and answer questions using a local LLM.\n\n"
+            "**Choose your mode:**\n\n"
+            "🤖 **Pilot Mode** — Fully autonomous. Send me a task, leave, and I'll execute and report back.\n"
+            "   Example: `/task git status`\n\n"
+            "👥 **Copilot Mode** — Proactive assistant. I monitor your screen and suggest actions in real-time.\n"
+            "   Enable with: `/copilot on`\n\n"
+            "**Quick Start:**\n"
+            "• `/task <description>` — Run any task\n"
+            "• `/web <url>` — Browse the web\n"
+            "• `/ask <question>` — Ask the LLM\n"
+            "• `/help` — Full command list\n"
+            "• `/ping` — Health check\n\n"
+            "Try it now: `/task ls -la` or `/ask what is Python?`"
+        )
+        await update.message.reply_text(welcome)
+        if uid is not None:
+            add_conversation(str(uid), "/start", "First time onboarding sent")
+    else:
+        # Returning user
+        welcome = (
+            "Hi, I'm Gedos. Your autonomous agent on Mac.\n\n"
+            "**Pilot Mode** — Send a task and I'll execute it.\n"
+            "**Copilot Mode** — `/copilot on` — proactive suggestions.\n\n"
+            "Commands:\n"
+            "- `/task <description>` — Run a task\n"
+            "- `/status` — Task status\n"
+            "- `/stop` — Stop execution\n"
+            "- `/copilot on|off` — Copilot Mode\n"
+            "- `/memory` — Task history\n"
+            "- `/web <url>` — Browse the web\n"
+            "- `/ask <question>` — Ask the LLM\n"
+            "- `/ping` — Health check\n"
+            "- `/help` — List commands"
+        )
+        await update.message.reply_text(welcome)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    help_text = (
-        "Commands:\n"
-        "/start — Welcome\n"
-        "/task <description> — Run a task\n"
-        "/status — Current status\n"
-        "/stop — Stop\n"
-        "/copilot on|off — Copilot Mode\n"
-        "/memory — Task history\n"
-        "/web <url> — Browse\n"
-        "/ask <question> — Ask the LLM\n"
-        "/ping — Health check\n"
-        "/help — This message"
-    )
+    uid = _user_id(update)
+    is_copilot_on = _copilot_active.get(uid, False) if uid is not None else False
+
+    if is_copilot_on:
+        # Copilot Mode help
+        help_text = (
+            "**Copilot Mode Active** 👥\n\n"
+            "I'm monitoring your screen and will send proactive suggestions and warnings.\n\n"
+            "**Commands:**\n"
+            "/copilot off — Disable Copilot\n"
+            "/task <description> — Run a task manually\n"
+            "/status — Current task status\n"
+            "/stop — Stop running task\n"
+            "/memory — Task history\n"
+            "/web <url> — Browse the web\n"
+            "/ask <question> — Ask the LLM\n"
+            "/ping — Health check\n\n"
+            "**How Copilot works:**\n"
+            "• Checks screen every 10 seconds\n"
+            "• Detects active app (Terminal, VS Code, Safari, etc.)\n"
+            "• Warns if errors appear on screen\n"
+            "• Suggests next actions based on context"
+        )
+    else:
+        # Pilot Mode help
+        help_text = (
+            "**Pilot Mode** 🤖\n\n"
+            "Send me tasks and I'll execute them autonomously.\n\n"
+            "**Commands:**\n"
+            "/start — Welcome message\n"
+            "/task <description> — Run a task\n"
+            "/status — Current task status\n"
+            "/stop — Stop running task\n"
+            "/copilot on — Enable Copilot Mode\n"
+            "/memory — Task history\n"
+            "/web <url> — Browse the web\n"
+            "/ask <question> — Ask the LLM\n"
+            "/ping — Health check\n\n"
+            "**Examples:**\n"
+            "`/task ls -la`\n"
+            "`/task git status`\n"
+            "`/task navigate to google.com`\n"
+            "`/ask what is Python?`\n\n"
+            "Enable Copilot for real-time assistance: `/copilot on`"
+        )
     await update.message.reply_text(help_text)
 
 
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global _current_task, _task_status
+    global _current_task, _task_status, _task_cancelled
     if not update.message or not update.message.text:
         return
 
@@ -142,6 +210,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = _user_id(update)
     _current_task = payload
     _task_status = "running"
+    _task_cancelled = False
     logger.info("Task received: %s", payload[:100])
 
     low = payload.lower()
@@ -176,6 +245,10 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
     if _looks_like_shell_command(payload):
+        if _task_cancelled:
+            _task_status = "idle"
+            await update.message.reply_text("⚠️ Task cancelled.")
+            return
         result = run_shell(payload)
         _task_status = "idle"
         reply = _format_terminal_result(result)
@@ -185,13 +258,23 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000])
         return
 
+    # Send progress message for long tasks
+    progress_msg = await update.message.reply_text("⏳ Task started, executing...")
     try:
+        if _task_cancelled:
+            _task_status = "idle"
+            await progress_msg.edit_text("⚠️ Task cancelled.")
+            return
         out = run_task_with_langgraph(payload)
+        if _task_cancelled:
+            _task_status = "idle"
+            await progress_msg.edit_text("⚠️ Task cancelled.")
+            return
     except Exception as e:
         logger.exception("Orchestrator failed for task: %s", payload[:80])
         _task_status = "idle"
         reply = f"Execution error: {str(e)[:300]}"
-        await update.message.reply_text(reply)
+        await progress_msg.edit_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
@@ -200,7 +283,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply = out.get("result") or "No result."
     if len(reply) > 4000:
         reply = reply[:4000] + "\n... (truncated)"
-    await update.message.reply_text(reply)
+    await progress_msg.edit_text(reply)
     if uid is not None:
         add_conversation(str(uid), payload, reply[:500])
         memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000])
@@ -221,12 +304,16 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global _task_status
+    global _task_status, _task_cancelled
     if not update.message:
         return
-    _task_status = "stopped"
-    logger.info("Stop requested")
-    await update.message.reply_text("Stop requested.")
+    if _task_status == "running":
+        _task_cancelled = True
+        _task_status = "stopped"
+        logger.info("Task cancellation requested")
+        await update.message.reply_text("⚠️ Task cancellation requested. Will stop at next checkpoint.")
+    else:
+        await update.message.reply_text("No task is currently running.")
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

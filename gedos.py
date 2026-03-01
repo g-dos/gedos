@@ -13,10 +13,12 @@ import sys
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from rich.traceback import install as install_rich_traceback
 
 from core.config import load_config
 
 console = Console()
+install_rich_traceback(show_locals=False)
 
 
 def _build_parser() -> argparse.ArgumentParser:
