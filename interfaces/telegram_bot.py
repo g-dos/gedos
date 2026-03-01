@@ -58,6 +58,24 @@ def _looks_like_shell_command(payload: str) -> bool:
     return any(low.startswith(p) for p in _SHELL_SAFE_PREFIXES) or low in ("ls", "pwd", "whoami", "date")
 
 
+def _check_rate_limit(user_id: int) -> bool:
+    """Check and update rate limit tracker for a user.
+
+    Returns True if the user is allowed to execute a command, False if rate limit exceeded.
+    """
+    now = time()
+    window_start = now - RATE_LIMIT_WINDOW
+    timestamps = _rate_limit_tracker[user_id]
+    # Remove timestamps outside the window
+    valid = [t for t in timestamps if t >= window_start]
+    _rate_limit_tracker[user_id] = valid
+    if len(valid) >= RATE_LIMIT_MAX:
+        return False
+    valid.append(now)
+    _rate_limit_tracker[user_id] = valid
+    return True
+
+
 def _format_ax_tree(tree: dict) -> str:
     err = tree.get("error")
     if err:
