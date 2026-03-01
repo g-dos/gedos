@@ -5,6 +5,8 @@ Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 
 import logging
 from typing import Optional
+from collections import defaultdict
+from time import time
 
 from telegram import Update
 from telegram.ext import (
@@ -20,6 +22,7 @@ from core.memory import (
     add_task as memory_add_task,
     get_recent_tasks,
     init_db as memory_init_db,
+    get_recent_conversations,
 )
 from core.orchestrator import run_task_with_langgraph
 from agents.terminal_agent import run_shell, TerminalResult
@@ -35,6 +38,11 @@ _task_cancelled: bool = False
 _copilot_active: dict[int, bool] = {}
 _last_app_per_user: dict[int, str] = {}
 _last_copilot_message_per_user: dict[int, str] = {}
+
+# Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
+_rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
+RATE_LIMIT_MAX = 10  # max commands per minute
+RATE_LIMIT_WINDOW = 60.0  # seconds
 
 _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
