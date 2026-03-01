@@ -2,12 +2,13 @@
 
 > Your Mac. Working while you're not.
 
-Gedos is an open-source autonomous AI agent that lives on your Mac.
-It sees, clicks, codes, commits, and reports back to you on Telegram.
+Gedos is an open-source autonomous AI agent that runs on your Mac. It sees (AX Tree), clicks, runs commands, browses the web, and talks to you on Telegram — in **Pilot Mode** (autonomous tasks) or **Copilot Mode** (proactive suggestions and warnings while you work).
 
-> 🚧 Under active development. Star to follow progress.
+## Demo
 
-## Quick start (v0.2)
+*Record a short screen capture showing: `/task ls`, `/copilot on`, and a Copilot suggestion — then add the GIF here or under `docs/demo.gif`.*
+
+## Quick start (v0.3)
 
 1. **Clone and install**
    ```bash
@@ -33,10 +34,13 @@ It sees, clicks, codes, commits, and reports back to you on Telegram.
    - `/task ls`, `/task navegar para google.com`, `/task perguntar o que é Python`
    - `/web <url>` — open URL in headless browser
    - `/ask <pergunta>` — ask the LLM
-   - `/copilot on` | `/copilot off` — toggle Copilot Mode (proactive suggestions)
+   - `/copilot on` | `/copilot off` — Copilot Mode (suggestions + warnings)
    - `/memory` — recent tasks history
+   - `/ping` — health check
 
 **Requirements:** macOS (AX Tree + GUI), Python 3.12+. Ollama optional for local LLM.
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
 
