@@ -2,6 +2,19 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.5.0] — 2026-03
+
+### Added
+- **Demo GIF**: animated terminal simulation at `docs/demo.gif` with generation script
+- **docs/setup-ollama.md**: step-by-step Ollama install, recommended models, troubleshooting
+- **docs/examples.md**: 5 real usage examples (git commit, VS Code, web, screen, copilot mode)
+- **CONTRIBUTING.md**: clone/run instructions, code style, semantic commits, PR checklist
+
+### Changed
+- **README**: complete rewrite — end-to-end quickstart from fresh clone, command table, links to all docs
+
+---
+
 ## [0.4.0] — 2026-03
 
 ### Added
