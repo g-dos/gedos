@@ -3,7 +3,6 @@ GEDOS Voice — local transcription of Telegram voice messages using Whisper.
 """
 
 import logging
-import tempfile
 from pathlib import Path
 from typing import Optional, Union
 
