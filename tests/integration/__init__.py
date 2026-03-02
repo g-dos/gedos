@@ -1,3 +1,1 @@
-"""
-Integration tests init file.
-"""
+# Integration tests package
