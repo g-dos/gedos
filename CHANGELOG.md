@@ -2,6 +2,23 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.3] — 2026-03
+
+### Added
+- **Scheduled tasks**: `/schedule`, `/schedules`, `/unschedule` with APScheduler and SQLite persistence
+- **Voice input**: send voice messages as task input, transcribed locally via Whisper
+- **Natural language schedule parsing**: "every day at 9am", "tomorrow at 3pm", "every monday at 9am"
+- **Timezone support**: system timezone detection for scheduler
+- **Rich table for /schedules**: clean formatted output
+- **Voice polish**: typing indicator, memory logging, edge cases (empty, >60s, background noise)
+- **Tests**: `tests/test_scheduler.py` and `tests/test_voice.py`
+
+### Enhanced
+- **/schedule**: supports both explicit (daily 09:00) and natural language formats
+- **Voice handler**: rejects empty/long messages, detects background noise, logs to memory
+
+---
+
 ## [0.9.2] — 2026-03
 
 ### Added
