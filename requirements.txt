@@ -34,3 +34,7 @@ apscheduler>=3.10.0
 
 # Optional: for voice input via Telegram voice messages
 # pip install openai-whisper
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=1.0.0
