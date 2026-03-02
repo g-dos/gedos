@@ -884,6 +884,11 @@ async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Copilot Mode on. I'll monitor context and suggest when relevant.")
 
 
+async def _send_copilot_suggestion(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str) -> None:
+    """Send a Copilot suggestion message to a user."""
+    await context.bot.send_message(chat_id=user_id, text=message)
+
+
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show recent tasks from memory."""
     if not update.message:
