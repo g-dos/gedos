@@ -13,7 +13,12 @@ AgentKind = Literal["terminal", "gui", "web", "llm"]
 def _route_task(task: str) -> AgentKind:
     """Decide which agent should handle the task (heuristic)."""
     low = task.lower().strip()
-    if any(low.startswith(p) for p in ("navegar", "navigate", "abrir ", "open ", "buscar no google", "search ")) or "http" in low or ".com" in low:
+    
+    # Priority: GUI commands that mention specific apps (safari, chrome, firefox, etc.)
+    if any(app in low for app in ("safari", "chrome", "firefox", "edge")) and any(cmd in low for cmd in ("open", "abrir", "launch")):
+        return "gui"
+    
+    if any(low.startswith(p) for p in ("navegar", "navigate", "buscar no google", "search ")) or ("http" in low and "open" not in low) or (".com" in low and "open" not in low):
         return "web"
     if any(k in low for k in ("clicar", "click", "botão", "botao", "button")):
         return "gui"
@@ -40,8 +45,80 @@ def _run_terminal(task: str) -> dict[str, Any]:
 def _run_gui(task: str) -> dict[str, Any]:
     """Execute task via GUI agent (lazy import)."""
     from agents.gui_agent import click_button, get_screen_summary
+    import subprocess
+    import time
+    import re
 
     low = task.lower()
+    
+    # Handle compound commands like "open safari and go to github.com"
+    if any(app in low for app in ("safari", "chrome", "firefox", "edge")) and ("go to" in low or "navigate to" in low):
+        # Extract app name
+        app_name = None
+        for app in ("safari", "chrome", "firefox", "edge"):
+            if app in low:
+                app_name = app.capitalize()
+                break
+        
+        # Extract URL
+        url = None
+        url_pattern = r'([a-zA-Z0-9-]+\.(?:com|org|net|edu|gov|io|co|br|uk|de|fr)[/\w\-\.]*)'
+        url_match = re.search(url_pattern, task)
+        if url_match:
+            url = url_match.group(1)
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+        
+        if app_name and url:
+            try:
+                # Open the app
+                subprocess.run(["open", "-a", app_name], check=True)
+                time.sleep(2)  # Wait for app to open
+                
+                # Open URL in the app
+                subprocess.run(["open", url], check=True)
+                
+                return {
+                    "success": True, 
+                    "result": f"Opened {app_name} and navigated to {url}", 
+                    "agent_used": "gui"
+                }
+            except subprocess.CalledProcessError as e:
+                return {
+                    "success": False,
+                    "result": f"Failed to open {app_name}: {str(e)}",
+                    "agent_used": "gui"
+                }
+    
+    # Handle simple app opening like "open safari"
+    for app in ("safari", "chrome", "firefox", "edge", "finder", "terminal", "vscode", "code"):
+        if f"open {app}" in low or f"abrir {app}" in low:
+            app_map = {
+                "safari": "Safari",
+                "chrome": "Google Chrome", 
+                "firefox": "Firefox",
+                "edge": "Microsoft Edge",
+                "finder": "Finder",
+                "terminal": "Terminal",
+                "vscode": "Visual Studio Code",
+                "code": "Visual Studio Code"
+            }
+            app_name = app_map.get(app, app.capitalize())
+            try:
+                subprocess.run(["open", "-a", app_name], check=True)
+                return {
+                    "success": True,
+                    "result": f"Opened {app_name}",
+                    "agent_used": "gui"
+                }
+            except subprocess.CalledProcessError as e:
+                return {
+                    "success": False,
+                    "result": f"Failed to open {app_name}: {str(e)}",
+                    "agent_used": "gui"
+                }
+
+    # Original button clicking logic
     btn_name = None
     for prefix in ("clicar no botão ", "clicar no botao ", "click no botão ", "click no botao ",
                     "click the ", "click on ", "clicar no ", "click no ", "click "):
@@ -54,6 +131,8 @@ def _run_gui(task: str) -> dict[str, Any]:
     if btn_name:
         ok = click_button(btn_name)
         return {"success": ok, "result": "Clicked the button." if ok else f"Button '{btn_name}' not found.", "agent_used": "gui"}
+    
+    # Fallback: show screen summary
     summary = get_screen_summary()
     err = summary.get("error")
     if err:
