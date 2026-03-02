@@ -32,6 +32,9 @@ psutil>=5.9.0
 # v0.9.3: Scheduling
 apscheduler>=3.10.0
 
+# v0.9.4: Language detection
+langdetect>=1.0.9
+
 # Optional: for voice input via Telegram voice messages
 # pip install openai-whisper
 

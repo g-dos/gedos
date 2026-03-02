@@ -11,11 +11,27 @@ from core.config import get_llm_config
 logger = logging.getLogger(__name__)
 
 
-def complete(prompt: str, system: Optional[str] = None, max_tokens: int = 1024) -> str:
+def complete(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: int = 1024,
+    language: Optional[str] = None,
+) -> str:
     """
     Send prompt to configured LLM and return reply text.
     Uses Ollama by default; Claude/OpenAI when configured via env.
+    If language is set, adds instruction to respond in that language.
     """
+    lang_instruction = ""
+    if language and language != "en":
+        lang_names = {"pt": "Portuguese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "ru": "Russian", "ja": "Japanese", "zh": "Chinese", "ko": "Korean"}
+        lang_name = lang_names.get(language, language)
+        lang_instruction = f" Always respond in {lang_name}. Never switch languages."
+    if system:
+        system = system + lang_instruction
+    elif lang_instruction:
+        system = "You are a helpful assistant." + lang_instruction
+
     config = get_llm_config()
     provider = (config.get("provider") or "ollama").lower().strip()
 

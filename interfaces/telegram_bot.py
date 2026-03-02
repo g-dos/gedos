@@ -26,7 +26,9 @@ from core.memory import (
     get_recent_tasks,
     init_db as memory_init_db,
     get_recent_conversations,
+    get_user_language,
 )
+from interfaces.i18n import t
 from core.orchestrator import run_task_with_langgraph
 from agents.terminal_agent import run_shell, TerminalResult
 from agents.gui_agent import click_button
@@ -121,38 +123,41 @@ def _user_id(update: Update) -> Optional[int]:
     return None
 
 
-async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update) -> dict:
+def _user_lang(update: Update, text: Optional[str] = None) -> str:
+    """Get user language. If text provided, detect and update cache. Else use cached."""
+    uid = _user_id(update)
+    if uid is None:
+        return "en"
+    if text:
+        from tools.language import get_and_update_user_language
+        return get_and_update_user_language(str(uid), text)
+    return get_user_language(str(uid)) or "en"
+
+
+async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
     """
     Execute a step with retry logic and user decision on failure.
     """
     import asyncio
     from core.orchestrator import _execute_single_step
     
-    # First attempt
     await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step.action[:50]}...")
-    result = _execute_single_step(step.agent, step.action, step_obj=step)
-    
-    # If successful, return immediately
+    result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
+
     if result.get('success', False):
         return result
-    
-    # First attempt failed, try once more
+
     first_error = result.get('result', 'Unknown error')[:100]
-    await progress_msg.edit_text(f"⚠️ Step {step_num}/{steps_count} failed. Retrying...")
-    
-    # Retry attempt
-    retry_result = _execute_single_step(step.agent, step.action, step_obj=step)
+    await progress_msg.edit_text(t("step_retry", lang, n=step_num, t=steps_count))
+
+    retry_result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
     
     # If retry succeeded, return success
     if retry_result.get('success', False):
         return retry_result
     
-    # Both attempts failed, ask user for decision
     retry_error = retry_result.get('result', 'Unknown error')[:100]
-    decision_message = (
-        f"❌ Step {step_num} failed: {retry_error}\n\n"
-        f"Continue anyway? /yes /no"
-    )
+    decision_message = t("step_failed_continue", lang, n=step_num, err=retry_error)
     
     await progress_msg.edit_text(decision_message)
     
@@ -183,7 +188,7 @@ async def _execute_step_with_recovery(step, step_num: int, steps_count: int, pro
         return {"success": False, "result": "Decision timeout - continuing", "agent_used": step.agent}
 
 
-async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional[int], update: Update) -> dict:
+async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
     """
     Execute a multi-step task with real-time progress updates to Telegram.
     """
@@ -193,17 +198,14 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
         from core.task_planner import plan_task
         from core.orchestrator import _execute_single_step
         
-        # Create task plan
-        plan = plan_task(task)
+        plan = plan_task(task, language=lang)
         
         if not plan.is_multi_step or not plan.steps:
-            # Fallback to single-step
             from core.orchestrator import run_single_step_task
-            return run_single_step_task(task)
-        
-        # Update progress with step count
+            return run_single_step_task(task, language=lang)
+
         steps_count = len(plan.steps)
-        await progress_msg.edit_text(f"⚙️ Planning complete! {steps_count} steps identified. Starting execution...")
+        await progress_msg.edit_text(t("planning_complete", lang, n=steps_count))
         
         results = []
         overall_success = True
@@ -222,16 +224,14 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
             await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
             
-            # Execute step with retry logic
             result = await _execute_step_with_recovery(
-                step, step_num, steps_count, progress_msg, uid, update
+                step, step_num, steps_count, progress_msg, uid, update, lang
             )
             agents_used.append(result.get('agent_used', step.agent))
             
-            # Check if execution was cancelled by user decision
             if result.get('cancelled', False):
                 _task_status = "idle"
-                await progress_msg.edit_text(f"⚠️ Task cancelled by user at step {step_num}/{steps_count}.")
+                await progress_msg.edit_text(t("task_cancelled_user", lang, n=step_num, t=steps_count))
                 return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
             
             # Update progress after step
@@ -249,7 +249,7 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
         success_count = sum(1 for r in results if "✅" in r)
         failure_count = len(results) - success_count
         
-        summary = f"📋 Multi-step task {'completed' if overall_success else 'finished with errors'}!\n\n"
+        summary = (t("task_completed", lang) if overall_success else t("task_finished_errors", lang)) + "\n\n"
         summary += f"Steps: {success_count} successful, {failure_count} failed\n\n"
         summary += "\n".join(results)
         
@@ -403,15 +403,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
 
+    text = update.message.text.strip()
+    lang = _user_lang(update, text)
     uid = _user_id(update)
     if uid is not None and not _check_rate_limit(uid):
-        await update.message.reply_text("⚠️ Rate limit exceeded. Max 10 commands per minute.")
+        await update.message.reply_text(t("rate_limit", lang))
         return
 
-    text = update.message.text.strip()
     payload = text[5:].strip() if text.lower().startswith("/task") else text
     if not payload:
-        await update.message.reply_text("Usage: /task <task description>")
+        await update.message.reply_text(t("usage_task", lang))
         return
 
     uid = _user_id(update)
@@ -471,18 +472,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         is_multi_step = _is_multi_step_task(payload)
     except ImportError:
         is_multi_step = False
-    
+
     if is_multi_step:
-        # Enhanced multi-step progress reporting
-        progress_msg = await update.message.reply_text("⚙️ Planning multi-step task...")
+        progress_msg = await update.message.reply_text(t("planning", lang))
         try:
             if _task_cancelled:
                 _task_status = "idle"
-                await progress_msg.edit_text("⚠️ Task cancelled during planning.")
+                await progress_msg.edit_text(t("task_cancelled", lang))
                 return
-            
-            # Execute with progress callback
-            out = await _run_task_with_progress_updates(payload, progress_msg, uid, update)
+
+            out = await _run_task_with_progress_updates(payload, progress_msg, uid, update, lang)
             
         except Exception as e:
             logger.exception("Multi-step task failed: %s", payload[:80])
@@ -494,17 +493,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
             return
     else:
-        # Single-step task (existing behavior)
-        progress_msg = await update.message.reply_text("⏳ Task started, executing...")
+        progress_msg = await update.message.reply_text(t("task_started", lang))
         try:
             if _task_cancelled:
                 _task_status = "idle"
-                await progress_msg.edit_text("⚠️ Task cancelled.")
+                await progress_msg.edit_text(t("task_cancelled", lang))
                 return
-            out = run_task_with_langgraph(payload)
+            out = run_task_with_langgraph(payload, language=lang)
             if _task_cancelled:
                 _task_status = "idle"
-                await progress_msg.edit_text("⚠️ Task cancelled.")
+                await progress_msg.edit_text(t("task_cancelled", lang))
                 return
         except Exception as e:
             logger.exception("Orchestrator failed for task: %s", payload[:80])
@@ -529,9 +527,10 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    lang = _user_lang(update)
     global _current_task, _task_status
     if _task_status == "idle" or not _current_task:
-        await update.message.reply_text("No task running.")
+        await update.message.reply_text(t("no_task_running", lang))
         return
     status_msg = f"Status: {_task_status}\nTask: {_current_task[:150]}"
     if len(_current_task) > 150:
@@ -543,26 +542,29 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _task_status, _task_cancelled
     if not update.message:
         return
+    lang = _user_lang(update)
     if _task_status == "running":
         _task_cancelled = True
         _task_status = "stopped"
         logger.info("Task cancellation requested")
-        await update.message.reply_text("⚠️ Task cancellation requested. Will stop at next checkpoint.")
+        await update.message.reply_text(t("task_cancelled", lang))
     else:
-        await update.message.reply_text("No task is currently running.")
+        await update.message.reply_text(t("no_task_running", lang))
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Health check: /ping."""
     if update.message:
-        await update.message.reply_text("pong")
+        lang = _user_lang(update)
+        await update.message.reply_text(t("pong", lang))
 
 
 async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user decision to continue after step failure."""
     uid = _user_id(update)
+    lang = _user_lang(update)
     if uid is None or uid not in _pending_step_decision:
-        await update.message.reply_text("No pending decision. Use this after a step fails.")
+        await update.message.reply_text(t("no_pending_decision", lang))
         return
     
     # Get the pending decision and continue execution
@@ -573,8 +575,9 @@ async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user decision to cancel after step failure."""
     uid = _user_id(update)
+    lang = _user_lang(update)
     if uid is None or uid not in _pending_step_decision:
-        await update.message.reply_text("No pending decision. Use this after a step fails.")
+        await update.message.reply_text(t("no_pending_decision", lang))
         return
 
     # Get the pending decision and cancel execution
@@ -603,28 +606,25 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     uid = _user_id(update)
+    lang = _user_lang(update)  # Use cached until we have transcribed text
     if uid is not None and not _check_rate_limit(uid):
-        await update.message.reply_text("⚠️ Rate limit exceeded. Max 10 commands per minute.")
+        await update.message.reply_text(t("rate_limit", lang))
         return
 
     voice = update.message.voice
-    # Reject empty or too long (>60s)
     duration = getattr(voice, "duration", 0) or 0
     if duration <= 0:
-        await update.message.reply_text("❌ Empty voice message. Please record again.")
+        await update.message.reply_text(t("voice_empty", lang))
         return
     if duration > 60:
-        await update.message.reply_text(
-            "❌ Voice message too long (max 60 seconds). Please send a shorter message."
-        )
+        await update.message.reply_text(t("voice_too_long", lang))
         return
 
-    # Show typing indicator while transcribing
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    status_msg = await update.message.reply_text("🎙️ Transcribing...")
+    status_msg = await update.message.reply_text(t("transcribing", lang))
 
     try:
         import os
@@ -643,33 +643,24 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 os.unlink(tmp_path)
 
         if error:
-            await status_msg.edit_text(
-                f"❌ Transcription failed: {error}\n\n"
-                "Please type your command instead: /task <description>"
-            )
+            await status_msg.edit_text(t("transcription_failed", lang, err=error))
             return
 
         if not transcribed or not transcribed.strip():
-            await status_msg.edit_text(
-                "❌ Could not understand the voice message (empty or unclear).\n\n"
-                "Please type your command instead: /task <description>"
-            )
+            await status_msg.edit_text(t("voice_unclear", lang))
             return
 
         if _is_background_noise_only(transcribed):
-            await status_msg.edit_text(
-                "❌ Voice message contained only background noise.\n\n"
-                "Please speak clearly or type your command: /task <description>"
-            )
+            await status_msg.edit_text(t("voice_noise", lang))
             return
 
         payload = transcribed.strip()
+        lang = _user_lang(update, payload)  # Update lang from transcribed text
 
-        # Log transcription to memory layer
         if uid is not None:
             add_conversation(str(uid), f"[voice] {payload}", None)
 
-        await status_msg.edit_text(f"🎙️ Heard: \"{payload}\" — executing...")
+        await status_msg.edit_text(t("heard_executing", lang, text=payload))
 
         # Treat as /task command
         update.message.text = f"/task {payload}"
@@ -677,20 +668,19 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     except Exception as e:
         logger.exception("Voice message handling failed")
-        await status_msg.edit_text(
-            f"❌ Voice processing failed: {str(e)[:150]}\n\n"
-            "Please type your command instead: /task <description>"
-        )
+        await status_msg.edit_text(t("transcription_failed", lang, err=str(e)[:150]))
 
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create a scheduled task: /schedule daily 09:00 "check HN"."""
     if not update.message or not update.message.text:
         return
-    
+
+    text = update.message.text.strip()
+    lang = _user_lang(update, text)
     uid = _user_id(update)
     if uid is None:
-        await update.message.reply_text("⚠️ Cannot identify user.")
+        await update.message.reply_text(t("cannot_identify_user", lang))
         return
     
     try:
@@ -726,13 +716,12 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             schedule_date=schedule_data.get('schedule_date'),
         )
         
-        # Format confirmation message
         if task.frequency == "once":
-            confirm_msg = f"✅ Scheduled: once at {task.schedule_time} — {task.task_description}"
+            confirm_msg = t("scheduled_once", lang, time=task.schedule_time, task=task.task_description)
         elif task.frequency == "daily":
-            confirm_msg = f"✅ Scheduled: every day at {task.schedule_time} — {task.task_description}"
+            confirm_msg = t("scheduled_daily", lang, time=task.schedule_time, task=task.task_description)
         elif task.frequency == "weekly":
-            confirm_msg = f"✅ Scheduled: every {task.day_of_week.title()} at {task.schedule_time} — {task.task_description}"
+            confirm_msg = t("scheduled_weekly", lang, day=task.day_of_week.title(), time=task.schedule_time, task=task.task_description)
         
         confirm_msg += f"\n\nSchedule ID: #{task.id}"
         await update.message.reply_text(confirm_msg)
@@ -749,9 +738,10 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
 
+    lang = _user_lang(update)
     uid = _user_id(update)
     if uid is None:
-        await update.message.reply_text("⚠️ Cannot identify user.")
+        await update.message.reply_text(t("cannot_identify_user", lang))
         return
 
     try:
@@ -763,7 +753,7 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         schedules = list_user_schedules(str(uid))
 
         if not schedules:
-            await update.message.reply_text("📅 No active schedules.")
+            await update.message.reply_text(t("no_schedules", lang))
             return
 
         table = Table(title="📅 Your Schedules", show_header=True, header_style="bold")
@@ -797,10 +787,11 @@ async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Remove a schedule: /unschedule 5."""
     if not update.message or not update.message.text:
         return
-    
+
+    lang = _user_lang(update)
     uid = _user_id(update)
     if uid is None:
-        await update.message.reply_text("⚠️ Cannot identify user.")
+        await update.message.reply_text(t("cannot_identify_user", lang))
         return
     
     try:
@@ -828,9 +819,8 @@ async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(f"❌ You can only unschedule your own tasks.")
             return
         
-        # Remove the schedule
         if remove_schedule(task_id):
-            await update.message.reply_text(f"✅ Removed schedule #{task_id}: {task.task_description[:50]}")
+            await update.message.reply_text(t("schedule_removed", lang, id=task_id, task=task.task_description[:50]))
             logger.info(f"User {uid} removed schedule #{task_id}")
         else:
             await update.message.reply_text(f"❌ Failed to remove schedule #{task_id}")
@@ -847,9 +837,9 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
         from core.memory import add_conversation
         
         logger.info(f"Executing scheduled task autonomously: {task[:50]}")
-        
-        # Execute the task
-        result = run_task(task)
+
+        lang = get_user_language(str(user_id)) or "en"
+        result = run_task(task, language=lang)
         
         # Store conversation
         add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', 'Completed')))
@@ -933,12 +923,13 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    lang = _user_lang(update, text)
     question = text[4:].strip() if text.lower().startswith("/ask") else text
     if not question:
-        await update.message.reply_text("Usage: /ask <question>")
+        await update.message.reply_text(t("usage_ask", lang))
         return
     from core.llm import complete
-    reply = complete(question, max_tokens=1024)
+    reply = complete(question, max_tokens=1024, language=lang)
     if len(reply) > 4000:
         reply = reply[:4000] + "\n... (truncated)"
     await update.message.reply_text(reply)
@@ -984,7 +975,8 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.error("Telegram error: %s", context.error, exc_info=context.error)
     if isinstance(update, Update) and update.message:
         try:
-            await update.message.reply_text("An internal error occurred. Please try again.")
+            lang = _user_lang(update)
+            await update.message.reply_text(t("internal_error", lang))
         except Exception:
             pass
 

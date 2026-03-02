@@ -241,6 +241,20 @@ def set_user_timezone(user_id: str, timezone: str, session: Optional[Session] = 
     return add_context("user_timezone", {"user_id": str(user_id), "timezone": timezone}, session=session)
 
 
+def get_user_language(user_id: str, session: Optional[Session] = None) -> Optional[str]:
+    """Get cached language for a user. Returns None if not set."""
+    entries = get_recent_context(type_name="user_language", limit=50, session=session)
+    for e in entries:
+        if e.data.get("user_id") == str(user_id):
+            return e.data.get("language")
+    return None
+
+
+def set_user_language(user_id: str, language: str, session: Optional[Session] = None) -> Context:
+    """Store language preference for a user."""
+    return add_context("user_language", {"user_id": str(user_id), "language": language}, session=session)
+
+
 def get_recent_context(type_name: Optional[str] = None, limit: int = 10, session: Optional[Session] = None) -> list[Context]:
     """Get recent context entries, optionally filtered by type."""
     own_session = session is None

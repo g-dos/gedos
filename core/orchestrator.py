@@ -196,18 +196,18 @@ def _web_result_to_dict(r) -> dict[str, Any]:
     return {"success": True, "result": "\n".join(parts), "agent_used": "web"}
 
 
-def _run_llm(task: str) -> dict[str, Any]:
+def _run_llm(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """Execute task via LLM (lazy import)."""
     from core.llm import complete as llm_complete
 
-    reply = llm_complete(task, max_tokens=1024)
+    reply = llm_complete(task, max_tokens=1024, language=language)
     return {"success": True, "result": reply, "agent_used": "llm"}
 
 
-def _execute_single_step(agent: AgentKind, action: str, step_obj=None) -> dict[str, Any]:
+def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language: Optional[str] = None) -> dict[str, Any]:
     """Execute a single step with the specified agent."""
     logger.info("Executing step with %s: %s", agent, action[:80])
-    
+
     # Try using the new execute_step method if step_obj is provided
     if step_obj:
         try:
@@ -221,10 +221,10 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None) -> dict[s
                 from agents.web_agent import execute_step
                 return execute_step(step_obj)
             elif agent == "llm":
-                return _run_llm(action)  # LLM doesn't need step-specific handling yet
+                return _run_llm(action, language=language)
         except Exception as e:
             logger.warning("Step-specific execution failed, falling back to legacy: %s", e)
-    
+
     # Fallback to legacy execution
     for attempt in range(2):
         try:
@@ -235,7 +235,7 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None) -> dict[s
             if agent == "web":
                 return _run_web(action)
             if agent == "llm":
-                return _run_llm(action)
+                return _run_llm(action, language=language)
         except Exception as e:
             logger.warning("Step execution attempt %s failed: %s", attempt + 1, e)
             if attempt == 1:
@@ -244,30 +244,29 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None) -> dict[s
     return {"success": False, "result": "Unknown agent.", "agent_used": "none"}
 
 
-def _run_multi_step_task(task: str) -> dict[str, Any]:
+def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Execute a multi-step task using the task planner.
     """
     try:
         from core.task_planner import plan_task
-        
-        plan = plan_task(task)
-        
+
+        plan = plan_task(task, language=language)
+
         if not plan.is_multi_step or not plan.steps:
-            # Fall back to single-step execution
-            return run_single_step_task(task)
-        
+            return run_single_step_task(task, language=language)
+
         logger.info(f"Executing multi-step plan with {len(plan.steps)} steps")
-        
+
         results = []
         overall_success = True
         agents_used = []
-        
+
         for i, step in enumerate(plan.steps):
             step_num = i + 1
             logger.info(f"Step {step_num}/{len(plan.steps)}: {step.agent} - {step.action[:80]}")
-            
-            result = _execute_single_step(step.agent, step.action, step_obj=step)
+
+            result = _execute_single_step(step.agent, step.action, step_obj=step, language=language)
             results.append(f"Step {step_num}: {result['result']}")
             agents_used.append(result.get('agent_used', step.agent))
             
@@ -292,15 +291,15 @@ def _run_multi_step_task(task: str) -> dict[str, Any]:
         return {"success": False, "result": f"Multi-step planning error: {str(e)[:500]}", "agent_used": "planner"}
 
 
-def run_single_step_task(task: str) -> dict[str, Any]:
+def run_single_step_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Route and execute a single-step task. Returns dict with success, result, agent_used.
     """
     agent = _route_task(task)
-    return _execute_single_step(agent, task)
+    return _execute_single_step(agent, task, language=language)
 
 
-def run_task(task: str) -> dict[str, Any]:
+def run_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Route and execute a task (single or multi-step). Returns dict with success, result, agent_used.
     """
@@ -309,21 +308,20 @@ def run_task(task: str) -> dict[str, Any]:
         
         if _is_multi_step_task(task):
             logger.info("Detected multi-step task: %s", task[:80])
-            return _run_multi_step_task(task)
+            return _run_multi_step_task(task, language=language)
         else:
             logger.info("Executing single-step task: %s", task[:80])
-            return run_single_step_task(task)
-            
+            return run_single_step_task(task, language=language)
+
     except ImportError:
-        # Fallback if task_planner is not available
         logger.warning("Task planner not available, using single-step execution")
-        return run_single_step_task(task)
+        return run_single_step_task(task, language=language)
     except Exception as e:
         logger.exception("Task routing failed")
         return {"success": False, "result": f"Task routing error: {str(e)[:500]}", "agent_used": "orchestrator"}
 
 
-def run_task_with_langgraph(task: str) -> dict[str, Any]:
+def run_task_with_langgraph(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Run task through a LangGraph workflow with multi-step support.
     State flows: task -> plan -> execute -> result.
@@ -348,9 +346,9 @@ def run_task_with_langgraph(task: str) -> dict[str, Any]:
         def execute_task_node(state: State) -> State:
             """Execute task using appropriate method (single or multi-step)."""
             if state.get("is_multi_step", False):
-                out = _run_multi_step_task(state["task"])
+                out = _run_multi_step_task(state["task"], language=language)
             else:
-                out = run_single_step_task(state["task"])
+                out = run_single_step_task(state["task"], language=language)
             
             return {
                 "success": out["success"], 
@@ -381,7 +379,7 @@ def run_task_with_langgraph(task: str) -> dict[str, Any]:
             "agent_used": final["agent_used"]
         }
     except ImportError:
-        return run_task(task)
+        return run_task(task, language=language)
     except Exception as e:
         logger.exception("LangGraph run failed: %s", e)
-        return run_task(task)
+        return run_task(task, language=language)

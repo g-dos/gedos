@@ -100,7 +100,7 @@ Important rules:
 Break down: {task}"""
 
 
-def plan_task(task: str) -> TaskPlan:
+def plan_task(task: str, language: Optional[str] = None) -> TaskPlan:
     """
     Analyze a task and create an execution plan.
     Returns TaskPlan with steps if multi-step, or single step if simple.
@@ -117,9 +117,9 @@ def plan_task(task: str) -> TaskPlan:
         
         # Use LLM to plan multi-step task
         from core.llm import complete as llm_complete
-        
+
         prompt = _create_planning_prompt(task)
-        response = llm_complete(prompt, max_tokens=1000)
+        response = llm_complete(prompt, max_tokens=1000, language=language)
         
         # Try to extract JSON from response
         steps_data = _extract_json_from_response(response)
