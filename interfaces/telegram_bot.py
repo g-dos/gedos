@@ -355,6 +355,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/memory — Task history\n"
             "/web <url> — Browse the web\n"
             "/ask <question> — Ask the LLM\n"
+            "/schedule — Create scheduled tasks\n"
+            "/schedules — List active schedules\n" 
+            "/unschedule <id> — Remove a schedule\n"
             "/ping — Health check\n\n"
             "**How Copilot works:**\n"
             "• Checks screen every 10 seconds\n"
@@ -376,12 +379,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/memory — Task history\n"
             "/web <url> — Browse the web\n"
             "/ask <question> — Ask the LLM\n"
+            "/schedule — Create scheduled tasks\n"
+            "/schedules — List active schedules\n"
+            "/unschedule <id> — Remove a schedule\n"
             "/ping — Health check\n\n"
             "**Examples:**\n"
             "`/task ls -la`\n"
             "`/task git status`\n"
             "`/task navigate to google.com`\n"
-            "`/ask what is Python?`\n\n"
+            "`/ask what is Python?`\n"
+            "`/schedule daily 09:00 \"check HN and summarize\"`\n"
+            "`/schedule weekly monday 14:00 \"backup files\"`\n\n"
             "Enable Copilot for real-time assistance: `/copilot on`"
         )
     await update.message.reply_text(help_text)
@@ -571,6 +579,184 @@ async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await decision_info["callback"](False)  # Cancel execution
 
 
+async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create a scheduled task: /schedule daily 09:00 "check HN"."""
+    if not update.message or not update.message.text:
+        return
+    
+    uid = _user_id(update)
+    if uid is None:
+        await update.message.reply_text("⚠️ Cannot identify user.")
+        return
+    
+    try:
+        from core.scheduler import parse_schedule_command, create_schedule, start_scheduler
+        
+        # Ensure scheduler is running
+        start_scheduler()
+        
+        # Parse the command
+        schedule_data = parse_schedule_command(update.message.text)
+        if not schedule_data:
+            help_text = (
+                "❌ Invalid format. Use:\n\n"
+                "• `/schedule daily 09:00 \"check HN and summarize\"`\n"
+                "• `/schedule once 14:30 \"remind me to review PR\"`\n"
+                "• `/schedule weekly monday 09:00 \"generate report\"`"
+            )
+            await update.message.reply_text(help_text)
+            return
+        
+        # Create the schedule
+        task = create_schedule(
+            user_id=str(uid),
+            frequency=schedule_data['frequency'],
+            schedule_time=schedule_data['time'],
+            task_description=schedule_data['task'],
+            day_of_week=schedule_data['day_of_week']
+        )
+        
+        # Format confirmation message
+        if task.frequency == "once":
+            confirm_msg = f"✅ Scheduled: once at {task.schedule_time} — {task.task_description}"
+        elif task.frequency == "daily":
+            confirm_msg = f"✅ Scheduled: every day at {task.schedule_time} — {task.task_description}"
+        elif task.frequency == "weekly":
+            confirm_msg = f"✅ Scheduled: every {task.day_of_week.title()} at {task.schedule_time} — {task.task_description}"
+        
+        confirm_msg += f"\n\nSchedule ID: #{task.id}"
+        await update.message.reply_text(confirm_msg)
+        
+        logger.info(f"User {uid} created schedule #{task.id}")
+        
+    except Exception as e:
+        logger.exception("Failed to create schedule")
+        await update.message.reply_text(f"❌ Failed to create schedule: {str(e)[:200]}")
+
+
+async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all active schedules: /schedules."""
+    if not update.message:
+        return
+    
+    uid = _user_id(update)
+    if uid is None:
+        await update.message.reply_text("⚠️ Cannot identify user.")
+        return
+    
+    try:
+        from core.scheduler import list_user_schedules, format_schedule_description
+        
+        schedules = list_user_schedules(str(uid))
+        
+        if not schedules:
+            await update.message.reply_text("📅 No active schedules.")
+            return
+        
+        schedule_list = []
+        for task in schedules:
+            description = format_schedule_description(task)
+            if task.last_run:
+                last_run_str = task.last_run.strftime("%Y-%m-%d %H:%M")
+                description += f" (last: {last_run_str})"
+            schedule_list.append(description)
+        
+        msg = f"📅 Your active schedules ({len(schedules)}):\n\n"
+        msg += "\n".join(schedule_list)
+        msg += "\n\nUse `/unschedule <id>` to remove a schedule."
+        
+        await update.message.reply_text(msg)
+        
+    except Exception as e:
+        logger.exception("Failed to list schedules")
+        await update.message.reply_text(f"❌ Failed to list schedules: {str(e)[:200]}")
+
+
+async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove a schedule: /unschedule 5."""
+    if not update.message or not update.message.text:
+        return
+    
+    uid = _user_id(update)
+    if uid is None:
+        await update.message.reply_text("⚠️ Cannot identify user.")
+        return
+    
+    try:
+        from core.scheduler import remove_schedule, get_scheduled_task_by_id
+        
+        # Parse task ID from command
+        parts = update.message.text.strip().split()
+        if len(parts) != 2:
+            await update.message.reply_text("❌ Usage: `/unschedule <id>`\nExample: `/unschedule 5`")
+            return
+        
+        try:
+            task_id = int(parts[1])
+        except ValueError:
+            await update.message.reply_text("❌ Invalid ID. Use a number like `/unschedule 5`")
+            return
+        
+        # Verify ownership
+        task = get_scheduled_task_by_id(task_id)
+        if not task:
+            await update.message.reply_text(f"❌ Schedule #{task_id} not found.")
+            return
+        
+        if task.user_id != str(uid):
+            await update.message.reply_text(f"❌ You can only unschedule your own tasks.")
+            return
+        
+        # Remove the schedule
+        if remove_schedule(task_id):
+            await update.message.reply_text(f"✅ Removed schedule #{task_id}: {task.task_description[:50]}")
+            logger.info(f"User {uid} removed schedule #{task_id}")
+        else:
+            await update.message.reply_text(f"❌ Failed to remove schedule #{task_id}")
+        
+    except Exception as e:
+        logger.exception("Failed to unschedule task")
+        await update.message.reply_text(f"❌ Failed to unschedule: {str(e)[:200]}")
+
+
+async def _execute_task_autonomously(task: str, user_id: int) -> dict:
+    """Execute a task autonomously (for scheduled tasks) and send result to user."""
+    try:
+        from core.orchestrator import run_task
+        from core.memory import add_conversation
+        
+        logger.info(f"Executing scheduled task autonomously: {task[:50]}")
+        
+        # Execute the task
+        result = run_task(task)
+        
+        # Store conversation
+        add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', 'Completed')))
+        
+        # Send result to user via Telegram
+        try:
+            from telegram import Bot
+            from core.config import get_telegram_token
+            
+            bot = Bot(token=get_telegram_token())
+            
+            if result.get('success', False):
+                message = f"✅ Scheduled task completed:\n{task}\n\nResult: {result.get('result', 'Done')[:500]}"
+            else:
+                message = f"❌ Scheduled task failed:\n{task}\n\nError: {result.get('result', 'Unknown error')[:500]}"
+            
+            await bot.send_message(chat_id=user_id, text=message)
+            
+        except Exception as e:
+            logger.error(f"Failed to send scheduled task result to user {user_id}: {e}")
+        
+        return result
+        
+    except Exception as e:
+        logger.exception(f"Failed to execute scheduled task: {task}")
+        return {"success": False, "result": f"Execution failed: {str(e)}", "agent_used": "scheduler"}
+
+
 async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle Copilot Mode: /copilot on | /copilot off."""
     if not update.message or not update.message.text:
@@ -705,6 +891,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("yes", cmd_yes))
     app.add_handler(CommandHandler("no", cmd_no))
+    app.add_handler(CommandHandler("schedule", cmd_schedule))
+    app.add_handler(CommandHandler("schedules", cmd_schedules))
+    app.add_handler(CommandHandler("unschedule", cmd_unschedule))
     app.add_error_handler(_error_handler)
 
     copilot_cfg = config.get("copilot") or {}
@@ -723,6 +912,15 @@ def run_polling() -> None:
     memory_init_db()
     if not pilot_enabled():
         logger.warning("Pilot mode is disabled in config.")
+    
+    # Initialize scheduler
+    try:
+        from core.scheduler import start_scheduler
+        start_scheduler()
+        logger.info("Scheduler initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {e}")
+    
     app = build_application()
     logger.info("Gedos Telegram bot starting (polling)...")
     app.run_polling(

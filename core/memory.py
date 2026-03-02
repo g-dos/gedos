@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import JSON, DateTime, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,23 @@ class Context(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)  # app_state, screen_content, learning
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ScheduledTask(Base):
+    """Scheduled tasks (one-time and recurring)."""
+
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_description: Mapped[str] = mapped_column(Text, nullable=False)
+    frequency: Mapped[str] = mapped_column(String(32), nullable=False)  # once, daily, weekly
+    schedule_time: Mapped[str] = mapped_column(String(16), nullable=False)  # HH:MM format
+    day_of_week: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # monday, tuesday, etc (for weekly)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # APScheduler job ID
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_run: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 def get_engine(database_path: Optional[str] = None):
@@ -212,6 +229,115 @@ def get_recent_context(type_name: Optional[str] = None, limit: int = 10, session
         if type_name:
             q = q.filter(Context.type == type_name)
         return list(q.order_by(Context.timestamp.desc()).limit(limit).all())
+    finally:
+        if own_session:
+            session.close()
+
+
+# --- ScheduledTask CRUD ---
+
+
+def add_scheduled_task(
+    user_id: str,
+    task_description: str,
+    frequency: str,
+    schedule_time: str,
+    day_of_week: Optional[str] = None,
+    job_id: Optional[str] = None,
+    session: Optional[Session] = None
+) -> ScheduledTask:
+    """Create a new scheduled task record."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        task = ScheduledTask(
+            user_id=user_id,
+            task_description=task_description,
+            frequency=frequency,
+            schedule_time=schedule_time,
+            day_of_week=day_of_week,
+            job_id=job_id
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task
+    finally:
+        if own_session:
+            session.close()
+
+
+def get_scheduled_tasks(user_id: Optional[str] = None, active_only: bool = True, session: Optional[Session] = None) -> list[ScheduledTask]:
+    """Get scheduled tasks, optionally filtered by user and active status."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        q = session.query(ScheduledTask)
+        if user_id:
+            q = q.filter(ScheduledTask.user_id == user_id)
+        if active_only:
+            q = q.filter(ScheduledTask.is_active == True)
+        return list(q.order_by(ScheduledTask.created_at.desc()).all())
+    finally:
+        if own_session:
+            session.close()
+
+
+def get_scheduled_task_by_id(task_id: int, session: Optional[Session] = None) -> Optional[ScheduledTask]:
+    """Get a scheduled task by ID."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        return session.get(ScheduledTask, task_id)
+    finally:
+        if own_session:
+            session.close()
+
+
+def update_scheduled_task(
+    task_id: int,
+    is_active: Optional[bool] = None,
+    job_id: Optional[str] = None,
+    last_run: Optional[datetime] = None,
+    session: Optional[Session] = None
+) -> Optional[ScheduledTask]:
+    """Update a scheduled task."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        task = session.get(ScheduledTask, task_id)
+        if not task:
+            return None
+        if is_active is not None:
+            task.is_active = is_active
+        if job_id is not None:
+            task.job_id = job_id
+        if last_run is not None:
+            task.last_run = last_run
+        session.commit()
+        session.refresh(task)
+        return task
+    finally:
+        if own_session:
+            session.close()
+
+
+def delete_scheduled_task(task_id: int, session: Optional[Session] = None) -> bool:
+    """Delete a scheduled task. Returns True if deleted, False if not found."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        task = session.get(ScheduledTask, task_id)
+        if not task:
+            return False
+        session.delete(task)
+        session.commit()
+        return True
     finally:
         if own_session:
             session.close()
