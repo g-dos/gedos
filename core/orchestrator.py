@@ -1,5 +1,6 @@
 """
 GEDOS Orchestrator — LangGraph task planning and routing to Terminal, GUI, Web agents.
+Supports both single-step and multi-step task execution.
 """
 
 import logging
@@ -203,73 +204,163 @@ def _run_llm(task: str) -> dict[str, Any]:
     return {"success": True, "result": reply, "agent_used": "llm"}
 
 
-def run_task(task: str) -> dict[str, Any]:
-    """
-    Route and execute a single task. Returns dict with success, result, agent_used.
-    """
-    agent = _route_task(task)
-    logger.info("Orchestrator routing task to %s: %s", agent, task[:80])
+def _execute_single_step(agent: AgentKind, action: str) -> dict[str, Any]:
+    """Execute a single step with the specified agent."""
+    logger.info("Executing step with %s: %s", agent, action[:80])
     for attempt in range(2):
         try:
             if agent == "terminal":
-                return _run_terminal(task)
+                return _run_terminal(action)
             if agent == "gui":
-                return _run_gui(task)
+                return _run_gui(action)
             if agent == "web":
-                return _run_web(task)
+                return _run_web(action)
             if agent == "llm":
-                return _run_llm(task)
+                return _run_llm(action)
         except Exception as e:
-            logger.warning("Orchestrator attempt %s failed: %s", attempt + 1, e)
+            logger.warning("Step execution attempt %s failed: %s", attempt + 1, e)
             if attempt == 1:
-                logger.exception("Orchestrator execution failed")
+                logger.exception("Step execution failed")
                 return {"success": False, "result": str(e)[:500], "agent_used": agent}
     return {"success": False, "result": "Unknown agent.", "agent_used": "none"}
 
 
+def _run_multi_step_task(task: str) -> dict[str, Any]:
+    """
+    Execute a multi-step task using the task planner.
+    """
+    try:
+        from core.task_planner import plan_task
+        
+        plan = plan_task(task)
+        
+        if not plan.is_multi_step or not plan.steps:
+            # Fall back to single-step execution
+            return run_single_step_task(task)
+        
+        logger.info(f"Executing multi-step plan with {len(plan.steps)} steps")
+        
+        results = []
+        overall_success = True
+        agents_used = []
+        
+        for i, step in enumerate(plan.steps):
+            step_num = i + 1
+            logger.info(f"Step {step_num}/{len(plan.steps)}: {step.agent} - {step.action[:80]}")
+            
+            result = _execute_single_step(step.agent, step.action)
+            results.append(f"Step {step_num}: {result['result']}")
+            agents_used.append(result.get('agent_used', step.agent))
+            
+            if not result.get('success', False):
+                logger.warning(f"Step {step_num} failed: {result.get('result', 'Unknown error')}")
+                overall_success = False
+                # Continue with remaining steps even if one fails
+        
+        # Combine all results
+        combined_result = "\n\n".join(results)
+        agents_summary = ", ".join(set(agents_used))
+        
+        return {
+            "success": overall_success,
+            "result": combined_result,
+            "agent_used": f"multi-step ({agents_summary})",
+            "steps_completed": len(results)
+        }
+        
+    except Exception as e:
+        logger.exception("Multi-step execution failed")
+        return {"success": False, "result": f"Multi-step planning error: {str(e)[:500]}", "agent_used": "planner"}
+
+
+def run_single_step_task(task: str) -> dict[str, Any]:
+    """
+    Route and execute a single-step task. Returns dict with success, result, agent_used.
+    """
+    agent = _route_task(task)
+    return _execute_single_step(agent, task)
+
+
+def run_task(task: str) -> dict[str, Any]:
+    """
+    Route and execute a task (single or multi-step). Returns dict with success, result, agent_used.
+    """
+    try:
+        from core.task_planner import _is_multi_step_task
+        
+        if _is_multi_step_task(task):
+            logger.info("Detected multi-step task: %s", task[:80])
+            return _run_multi_step_task(task)
+        else:
+            logger.info("Executing single-step task: %s", task[:80])
+            return run_single_step_task(task)
+            
+    except ImportError:
+        # Fallback if task_planner is not available
+        logger.warning("Task planner not available, using single-step execution")
+        return run_single_step_task(task)
+    except Exception as e:
+        logger.exception("Task routing failed")
+        return {"success": False, "result": f"Task routing error: {str(e)[:500]}", "agent_used": "orchestrator"}
+
+
 def run_task_with_langgraph(task: str) -> dict[str, Any]:
     """
-    Run task through a minimal LangGraph workflow (route -> execute).
-    State flows: task -> route -> execute -> result.
+    Run task through a LangGraph workflow with multi-step support.
+    State flows: task -> plan -> execute -> result.
     """
     try:
         from typing import TypedDict
         from langgraph.graph import StateGraph, START, END
+        from core.task_planner import _is_multi_step_task
 
         class State(TypedDict):
             task: str
             result: str
             agent_used: str
             success: bool
+            is_multi_step: bool
 
-        def route(state: State) -> State:
-            agent = _route_task(state["task"])
-            return {"agent_used": agent}
+        def plan_task_node(state: State) -> State:
+            """Determine if task is multi-step and set planning flag."""
+            is_multi_step = _is_multi_step_task(state["task"])
+            return {"is_multi_step": is_multi_step}
 
-        def execute(state: State) -> State:
-            agent = state["agent_used"]
-            if agent == "terminal":
-                out = _run_terminal(state["task"])
-            elif agent == "gui":
-                out = _run_gui(state["task"])
-            elif agent == "web":
-                out = _run_web(state["task"])
-            elif agent == "llm":
-                out = _run_llm(state["task"])
+        def execute_task_node(state: State) -> State:
+            """Execute task using appropriate method (single or multi-step)."""
+            if state.get("is_multi_step", False):
+                out = _run_multi_step_task(state["task"])
             else:
-                out = {"success": False, "result": "?", "agent_used": agent}
-            return {"success": out["success"], "result": out.get("result") or "", "agent_used": out.get("agent_used") or agent}
+                out = run_single_step_task(state["task"])
+            
+            return {
+                "success": out["success"], 
+                "result": out.get("result") or "", 
+                "agent_used": out.get("agent_used") or "unknown"
+            }
 
         graph = StateGraph(State)
-        graph.add_node("route", route)
-        graph.add_node("execute", execute)
-        graph.add_edge(START, "route")
-        graph.add_edge("route", "execute")
+        graph.add_node("plan", plan_task_node)
+        graph.add_node("execute", execute_task_node)
+        graph.add_edge(START, "plan")
+        graph.add_edge("plan", "execute")
         graph.add_edge("execute", END)
         compiled = graph.compile()
-        initial: State = {"task": task, "result": "", "agent_used": "", "success": False}
+        
+        initial: State = {
+            "task": task, 
+            "result": "", 
+            "agent_used": "", 
+            "success": False,
+            "is_multi_step": False
+        }
         final = compiled.invoke(initial)
-        return {"success": final["success"], "result": final["result"], "agent_used": final["agent_used"]}
+        
+        return {
+            "success": final["success"], 
+            "result": final["result"], 
+            "agent_used": final["agent_used"]
+        }
     except ImportError:
         return run_task(task)
     except Exception as e:
