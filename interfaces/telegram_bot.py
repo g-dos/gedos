@@ -13,6 +13,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from core.config import get_telegram_token, pilot_enabled, load_config
@@ -568,15 +570,73 @@ async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle user decision to cancel after step failure.""" 
+    """Handle user decision to cancel after step failure."""
     uid = _user_id(update)
     if uid is None or uid not in _pending_step_decision:
         await update.message.reply_text("No pending decision. Use this after a step fails.")
         return
-    
+
     # Get the pending decision and cancel execution
     decision_info = _pending_step_decision.pop(uid)
     await decision_info["callback"](False)  # Cancel execution
+
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle voice messages: transcribe and execute as /task."""
+    if not update.message or not update.message.voice:
+        return
+
+    uid = _user_id(update)
+    if uid is not None and not _check_rate_limit(uid):
+        await update.message.reply_text("⚠️ Rate limit exceeded. Max 10 commands per minute.")
+        return
+
+    status_msg = await update.message.reply_text("🎙️ Transcribing...")
+
+    try:
+        import tempfile
+        from tools.voice import transcribe_audio
+
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            await file.download_to_drive(tmp_path)
+            transcribed, error = transcribe_audio(tmp_path)
+        finally:
+            import os
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        if error:
+            await status_msg.edit_text(
+                f"❌ Transcription failed: {error}\n\n"
+                "Please type your command instead: /task <description>"
+            )
+            return
+
+        if not transcribed or not transcribed.strip():
+            await status_msg.edit_text(
+                "❌ Could not understand the voice message.\n\n"
+                "Please type your command instead: /task <description>"
+            )
+            return
+
+        payload = transcribed.strip()
+        await status_msg.edit_text(f"🎙️ Heard: \"{payload}\" — executing...")
+
+        # Treat as /task command
+        update.message.text = f"/task {payload}"
+        await cmd_task(update, context)
+
+    except Exception as e:
+        logger.exception("Voice message handling failed")
+        await status_msg.edit_text(
+            f"❌ Voice processing failed: {str(e)[:150]}\n\n"
+            "Please type your command instead: /task <description>"
+        )
 
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -894,6 +954,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("schedules", cmd_schedules))
     app.add_handler(CommandHandler("unschedule", cmd_unschedule))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     app.add_error_handler(_error_handler)
 
     copilot_cfg = config.get("copilot") or {}
