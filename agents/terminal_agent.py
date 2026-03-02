@@ -136,9 +136,48 @@ def run_shell(
     return result
 
 
+def _correct_command_with_llm(failed_command: str, error_output: str) -> str:
+    """
+    Use LLM to suggest a corrected command based on the error.
+    
+    Args:
+        failed_command: The command that failed
+        error_output: The error message from the failed command
+        
+    Returns:
+        Suggested corrected command
+    """
+    try:
+        from core.config import get_llm_client
+        
+        prompt = f"""The following terminal command failed:
+Command: {failed_command}
+Error: {error_output}
+
+Provide ONLY a corrected command that would fix this error. Return just the command, no explanation or formatting."""
+
+        llm = get_llm_client()
+        if hasattr(llm, 'invoke'):
+            response = llm.invoke(prompt)
+        else:
+            response = llm(prompt)
+            
+        corrected = str(response).strip()
+        # Clean up common LLM response formatting
+        if corrected.startswith('```'):
+            lines = corrected.split('\n')
+            corrected = '\n'.join(line for line in lines if not line.startswith('```'))
+        
+        return corrected.strip() or failed_command
+        
+    except Exception as e:
+        logger.warning(f"LLM correction failed: {e}")
+        return failed_command
+
+
 def execute_step(step) -> dict[str, str]:
     """
-    Execute a structured task step using the terminal agent.
+    Execute a structured task step using the terminal agent with self-correction.
     
     Args:
         step: TaskStep object with agent, action, expected_result fields
@@ -149,13 +188,48 @@ def execute_step(step) -> dict[str, str]:
     try:
         from typing import Any
         
-        # Use the existing run_shell function
+        # First attempt
         result = run_shell(step.action)
         
-        # Format output similar to orchestrator
+        # If successful, return immediately
+        if result.success:
+            out = (result.stdout or "").strip() or "(no output)"
+            if len(out) > 1000:
+                out = out[:1000] + "\n... (truncated)"
+            return {
+                "success": True,
+                "result": out,
+                "agent_used": "terminal",
+                "command": step.action
+            }
+        
+        # Command failed, try self-correction
+        error_output = result.stderr or result.stdout or "Unknown error"
+        logger.info(f"Command failed, attempting self-correction: {step.action}")
+        
+        corrected_command = _correct_command_with_llm(step.action, error_output)
+        
+        # Only retry if LLM suggested a different command
+        if corrected_command != step.action:
+            logger.info(f"Retrying with corrected command: {corrected_command}")
+            corrected_result = run_shell(corrected_command)
+            
+            if corrected_result.success:
+                out = (corrected_result.stdout or "").strip() or "(no output)"
+                if len(out) > 1000:
+                    out = out[:1000] + "\n... (truncated)"
+                return {
+                    "success": True,
+                    "result": f"Self-corrected: {out}",
+                    "agent_used": "terminal",
+                    "command": corrected_command,
+                    "original_command": step.action
+                }
+        
+        # Format original error for user
         out = (result.stdout or "").strip() or "(no output)"
         err = (result.stderr or "").strip()
-        if len(out) > 1000:  # Shorter for step-by-step progress
+        if len(out) > 1000:
             out = out[:1000] + "\n... (truncated)"
         
         msg = out
@@ -163,7 +237,7 @@ def execute_step(step) -> dict[str, str]:
             msg += f"\nstderr: {err[:200]}"
             
         return {
-            "success": result.success,
+            "success": False,
             "result": msg,
             "agent_used": "terminal",
             "command": step.action
