@@ -115,6 +115,102 @@ def _user_id(update: Update) -> Optional[int]:
     return None
 
 
+async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional[int], update: Update) -> dict:
+    """
+    Execute a multi-step task with real-time progress updates to Telegram.
+    """
+    global _task_status, _task_cancelled
+    
+    try:
+        from core.task_planner import plan_task
+        from core.orchestrator import _execute_single_step
+        
+        # Create task plan
+        plan = plan_task(task)
+        
+        if not plan.is_multi_step or not plan.steps:
+            # Fallback to single-step
+            from core.orchestrator import run_single_step_task
+            return run_single_step_task(task)
+        
+        # Update progress with step count
+        steps_count = len(plan.steps)
+        await progress_msg.edit_text(f"⚙️ Planning complete! {steps_count} steps identified. Starting execution...")
+        
+        results = []
+        overall_success = True
+        agents_used = []
+        
+        # Execute each step with progress updates
+        for i, step in enumerate(plan.steps):
+            if _task_cancelled:
+                _task_status = "idle"
+                await progress_msg.edit_text(f"⚠️ Task cancelled at step {i+1}/{steps_count}.")
+                return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+            
+            step_num = i + 1
+            
+            # Update progress before step
+            step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
+            await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
+            
+            # Execute step
+            result = _execute_single_step(step.agent, step.action, step_obj=step)
+            agents_used.append(result.get('agent_used', step.agent))
+            
+            # Update progress after step
+            if result.get('success', False):
+                step_result = result.get('result', 'Completed')[:100]
+                await progress_msg.edit_text(f"✅ Step {step_num}/{steps_count}: {step_result}")
+                results.append(f"Step {step_num}: ✅ {step_result}")
+            else:
+                step_error = result.get('result', 'Unknown error')[:100]
+                await progress_msg.edit_text(f"❌ Step {step_num}/{steps_count} failed: {step_error}")
+                results.append(f"Step {step_num}: ❌ {step_error}")
+                overall_success = False
+                
+                # Continue with remaining steps on failure
+                logger.warning(f"Step {step_num} failed but continuing: {step_error}")
+        
+        # Final summary
+        _task_status = "idle"
+        success_count = sum(1 for r in results if "✅" in r)
+        failure_count = len(results) - success_count
+        
+        summary = f"📋 Multi-step task {'completed' if overall_success else 'finished with errors'}!\n\n"
+        summary += f"Steps: {success_count} successful, {failure_count} failed\n\n"
+        summary += "\n".join(results)
+        
+        if len(summary) > 4000:
+            summary = summary[:4000] + "\n... (truncated)"
+            
+        await progress_msg.edit_text(summary)
+        
+        # Store in memory
+        if uid is not None:
+            add_conversation(str(uid), task, summary[:500])
+            agents_summary = ", ".join(set(agents_used))
+            memory_add_task(
+                description=task, 
+                status="completed" if overall_success else "failed", 
+                agent_used=f"multi-step ({agents_summary})", 
+                result=summary[:1000]
+            )
+        
+        return {
+            "success": overall_success,
+            "result": summary,
+            "agent_used": f"multi-step ({', '.join(set(agents_used))})",
+            "steps_completed": len(results)
+        }
+        
+    except Exception as e:
+        logger.exception("Multi-step task execution failed")
+        error_msg = f"Multi-step planning error: {str(e)[:300]}"
+        await progress_msg.edit_text(f"❌ {error_msg}")
+        return {"success": False, "result": error_msg, "agent_used": "planner"}
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -289,35 +385,64 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000])
         return
 
-    # Send progress message for long tasks
-    progress_msg = await update.message.reply_text("⏳ Task started, executing...")
+    # Check if this is a multi-step task for enhanced progress reporting
     try:
-        if _task_cancelled:
+        from core.task_planner import _is_multi_step_task
+        is_multi_step = _is_multi_step_task(payload)
+    except ImportError:
+        is_multi_step = False
+    
+    if is_multi_step:
+        # Enhanced multi-step progress reporting
+        progress_msg = await update.message.reply_text("⚙️ Planning multi-step task...")
+        try:
+            if _task_cancelled:
+                _task_status = "idle"
+                await progress_msg.edit_text("⚠️ Task cancelled during planning.")
+                return
+            
+            # Execute with progress callback
+            out = await _run_task_with_progress_updates(payload, progress_msg, uid, update)
+            
+        except Exception as e:
+            logger.exception("Multi-step task failed: %s", payload[:80])
             _task_status = "idle"
-            await progress_msg.edit_text("⚠️ Task cancelled.")
+            reply = f"Multi-step execution error: {str(e)[:300]}"
+            await progress_msg.edit_text(reply)
+            if uid is not None:
+                add_conversation(str(uid), payload, reply[:500])
+                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
             return
-        out = run_task_with_langgraph(payload)
-        if _task_cancelled:
+    else:
+        # Single-step task (existing behavior)
+        progress_msg = await update.message.reply_text("⏳ Task started, executing...")
+        try:
+            if _task_cancelled:
+                _task_status = "idle"
+                await progress_msg.edit_text("⚠️ Task cancelled.")
+                return
+            out = run_task_with_langgraph(payload)
+            if _task_cancelled:
+                _task_status = "idle"
+                await progress_msg.edit_text("⚠️ Task cancelled.")
+                return
+        except Exception as e:
+            logger.exception("Orchestrator failed for task: %s", payload[:80])
             _task_status = "idle"
-            await progress_msg.edit_text("⚠️ Task cancelled.")
+            reply = f"Execution error: {str(e)[:300]}"
+            await progress_msg.edit_text(reply)
+            if uid is not None:
+                add_conversation(str(uid), payload, reply[:500])
+                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
             return
-    except Exception as e:
-        logger.exception("Orchestrator failed for task: %s", payload[:80])
         _task_status = "idle"
-        reply = f"Execution error: {str(e)[:300]}"
+        reply = out.get("result") or "No result."
+        if len(reply) > 4000:
+            reply = reply[:4000] + "\n... (truncated)"
         await progress_msg.edit_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
-            memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
-        return
-    _task_status = "idle"
-    reply = out.get("result") or "No result."
-    if len(reply) > 4000:
-        reply = reply[:4000] + "\n... (truncated)"
-    await progress_msg.edit_text(reply)
-    if uid is not None:
-        add_conversation(str(uid), payload, reply[:500])
-        memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000])
+            memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000])
     return
 
 

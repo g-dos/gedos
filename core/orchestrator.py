@@ -204,9 +204,28 @@ def _run_llm(task: str) -> dict[str, Any]:
     return {"success": True, "result": reply, "agent_used": "llm"}
 
 
-def _execute_single_step(agent: AgentKind, action: str) -> dict[str, Any]:
+def _execute_single_step(agent: AgentKind, action: str, step_obj=None) -> dict[str, Any]:
     """Execute a single step with the specified agent."""
     logger.info("Executing step with %s: %s", agent, action[:80])
+    
+    # Try using the new execute_step method if step_obj is provided
+    if step_obj:
+        try:
+            if agent == "terminal":
+                from agents.terminal_agent import execute_step
+                return execute_step(step_obj)
+            elif agent == "gui":
+                from agents.gui_agent import execute_step
+                return execute_step(step_obj)
+            elif agent == "web":
+                from agents.web_agent import execute_step
+                return execute_step(step_obj)
+            elif agent == "llm":
+                return _run_llm(action)  # LLM doesn't need step-specific handling yet
+        except Exception as e:
+            logger.warning("Step-specific execution failed, falling back to legacy: %s", e)
+    
+    # Fallback to legacy execution
     for attempt in range(2):
         try:
             if agent == "terminal":
@@ -248,7 +267,7 @@ def _run_multi_step_task(task: str) -> dict[str, Any]:
             step_num = i + 1
             logger.info(f"Step {step_num}/{len(plan.steps)}: {step.agent} - {step.action[:80]}")
             
-            result = _execute_single_step(step.agent, step.action)
+            result = _execute_single_step(step.agent, step.action, step_obj=step)
             results.append(f"Step {step_num}: {result['result']}")
             agents_used.append(result.get('agent_used', step.agent))
             

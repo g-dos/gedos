@@ -134,3 +134,46 @@ def run_shell(
             if result.success:
                 return result
     return result
+
+
+def execute_step(step) -> dict[str, str]:
+    """
+    Execute a structured task step using the terminal agent.
+    
+    Args:
+        step: TaskStep object with agent, action, expected_result fields
+        
+    Returns:
+        Dict with success, result, agent_used fields
+    """
+    try:
+        from typing import Any
+        
+        # Use the existing run_shell function
+        result = run_shell(step.action)
+        
+        # Format output similar to orchestrator
+        out = (result.stdout or "").strip() or "(no output)"
+        err = (result.stderr or "").strip()
+        if len(out) > 1000:  # Shorter for step-by-step progress
+            out = out[:1000] + "\n... (truncated)"
+        
+        msg = out
+        if err:
+            msg += f"\nstderr: {err[:200]}"
+            
+        return {
+            "success": result.success,
+            "result": msg,
+            "agent_used": "terminal",
+            "command": step.action
+        }
+        
+    except Exception as e:
+        logger.exception("Terminal step execution failed")
+        return {
+            "success": False,
+            "result": f"Terminal execution error: {str(e)[:300]}",
+            "agent_used": "terminal",
+            "command": getattr(step, 'action', 'unknown')
+        }

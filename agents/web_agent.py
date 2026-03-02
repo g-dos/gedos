@@ -245,3 +245,103 @@ async def _close_browser_async() -> None:
 
 def close_browser() -> None:
     return _run_coro_sync(_close_browser_async())
+
+
+def execute_step(step) -> dict[str, str]:
+    """
+    Execute a structured task step using the web agent.
+    
+    Args:
+        step: TaskStep object with agent, action, expected_result fields
+        
+    Returns:
+        Dict with success, result, agent_used fields
+    """
+    try:
+        action = step.action
+        low = action.lower()
+        
+        # Handle navigation actions
+        if any(keyword in low for keyword in ("navigate to", "go to", "visit", "open")):
+            # Extract URL from action
+            url = action.strip()
+            for prefix in ("navigate to ", "go to ", "visit ", "open "):
+                if prefix in low:
+                    url = low.split(prefix, 1)[-1].strip()
+                    break
+            
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            
+            result = navigate(url)
+            return {
+                "success": result.success,
+                "result": f"Navigated to {result.url}" if result.success else result.message,
+                "agent_used": "web"
+            }
+        
+        # Handle search actions
+        elif "search" in low:
+            # Extract search query
+            query = action
+            for prefix in ("search for ", "search ", "google "):
+                if prefix in low:
+                    query = low.split(prefix, 1)[-1].strip()
+                    break
+            
+            result = search_google(query)
+            return {
+                "success": result.success,
+                "result": f"Searched for '{query}'" if result.success else result.message,
+                "agent_used": "web"
+            }
+        
+        # Handle clicking actions
+        elif "click" in low:
+            # Extract selector
+            selector = None
+            if "click " in low:
+                parts = action.split("click ", 1)
+                if len(parts) > 1:
+                    selector = parts[1].strip()
+            
+            if selector:
+                result = click_selector(selector)
+                return {
+                    "success": result.success,
+                    "result": f"Clicked element '{selector}'" if result.success else result.message,
+                    "agent_used": "web"
+                }
+        
+        # Handle screenshot actions
+        elif "screenshot" in low or "capture" in low:
+            result = screenshot()
+            return {
+                "success": result.success,
+                "result": f"Screenshot saved to {result.screenshot_path}" if result.success else result.message,
+                "agent_used": "web"
+            }
+        
+        # Default: try to navigate if it looks like a URL
+        else:
+            if any(domain in action for domain in [".com", ".org", ".net", "http"]):
+                result = navigate(action)
+                return {
+                    "success": result.success,
+                    "result": f"Navigated to {result.url}" if result.success else result.message,
+                    "agent_used": "web"
+                }
+            else:
+                return {
+                    "success": False,
+                    "result": f"Unrecognized web action: {action}",
+                    "agent_used": "web"
+                }
+                
+    except Exception as e:
+        logger.exception("Web step execution failed")
+        return {
+            "success": False,
+            "result": f"Web execution error: {str(e)[:300]}",
+            "agent_used": "web"
+        }
