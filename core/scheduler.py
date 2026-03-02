@@ -213,9 +213,9 @@ def parse_schedule_command(command_text: str) -> Optional[Dict[str, Any]]:
     if match:
         return {
             'frequency': 'weekly',
-            'time': match.group(3),  # time is 3rd group for weekly pattern
-            'day_of_week': match.group(2).lower(),  # day is 2nd group
-            'task': match.group(4)  # task is 4th group
+            'time': match.group(2),  # time is 2nd group for weekly pattern
+            'day_of_week': match.group(1).lower(),  # day is 1st group  
+            'task': match.group(3)  # task is 3rd group
         }
     
     return None
