@@ -78,11 +78,24 @@ def _run_web(task: str) -> dict[str, Any]:
                     return _web_result_to_dict(r)
         r = search_google(task)
         return _web_result_to_dict(r)
+    
+    # Extract URL from task - handle complex commands like "open safari and go to github.com"
     url = task.strip()
     for p in ("navegar para ", "navigate to ", "abrir ", "open "):
         if p in low:
-            url = low.split(p, 1)[-1].strip()
+            after_prefix = low.split(p, 1)[-1].strip()
+            # Look for URL patterns in the text after prefix
+            import re
+            # Find URLs: domain.com, domain.org, domain.net, etc.
+            url_pattern = r'([a-zA-Z0-9-]+\.(?:com|org|net|edu|gov|io|co|br|uk|de|fr)[/\w\-\.]*)'
+            url_match = re.search(url_pattern, after_prefix)
+            if url_match:
+                url = url_match.group(1)
+            else:
+                # Fallback: use everything after prefix
+                url = after_prefix
             break
+    
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     r = navigate(url)
