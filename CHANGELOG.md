@@ -2,6 +2,26 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.4] — 2026-03
+
+### Fixed
+- **Test suite stability**: resolved all collection errors and restored the full suite to 64 passing tests
+- **Multi-step execution tests**: fixed step retry coverage, cancellation behavior, and working-directory persistence across terminal steps
+- **Copilot and routing tests**: aligned Copilot assertions, web routing expectations, and pilot cancellation tests with real behavior
+
+### Enhanced
+- **Language polish**: audited Telegram user-facing messaging and routed the active command responses through `interfaces/i18n.py`
+- **i18n completeness**: added an import-time completeness check to ensure `en`, `pt`, and `es` stay in sync for all defined keys
+- **Voice transcription**: passes the detected user language as a hint to local Whisper before transcription
+- **Copilot context awareness**: improved suggestions for VS Code, Terminal errors, GitHub PR pages, Finder, and idle-state prompts
+- **Copilot controls**: added `/copilot status` and `/copilot sensitivity high|medium|low`, with strict per-user cooldown handling
+
+### Security
+- **Security audit**: verified no hardcoded `/Users/santiago` paths and no obvious hardcoded token patterns in Python sources
+- **Dead code cleanup**: removed an unused production import and confirmed there are no stray debug `print()` calls or untracked TODO comments in production code
+
+---
+
 ## [0.9.3] — 2026-03
 
 ### Added
