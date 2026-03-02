@@ -2,6 +2,23 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.2] — 2026-03
+
+### Added
+- **Error recovery system**: multi-step tasks now retry failed steps once automatically
+- **User decision prompts**: when retry fails, Gedos asks "Continue anyway? /yes /no" 
+- **Self-correction for terminal**: failed terminal commands are automatically corrected using LLM and retried
+- **New commands**: `/yes` and `/no` for responding to step failure prompts
+- **Graceful cancellation**: `/stop` now cancels multi-step tasks between steps cleanly
+- **Integration tests**: comprehensive test suite for multi-step execution, retry logic, and self-correction (`tests/integration/test_multistep.py`)
+
+### Enhanced
+- **Multi-step execution**: more robust with automatic error handling and user interaction
+- **Terminal agent**: "errando e se corrigindo" behavior - learns from mistakes and fixes commands automatically
+- **Task cancellation**: improved mid-execution stopping with proper cleanup
+
+---
+
 ## [0.9.1] — 2026-03
 
 ### Fixed
