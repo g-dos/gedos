@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from interfaces.i18n import t
 from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
@@ -15,19 +16,6 @@ ERROR_RISK_KEYWORDS = (
     "error", "exception", "failed", "failure", "erro", "falha",
     "warning", "aviso", "traceback", "crash", "timeout",
 )
-
-APP_SUGGESTIONS = {
-    "terminal": "Want me to run a command in Terminal?",
-    "iterm": "Want me to run a command?",
-    "vscode": "Want me to commit, run tests, or search for something?",
-    "visual studio code": "Want me to commit, run tests, or search for something?",
-    "xcode": "Want me to run the build or do something in the project?",
-    "cursor": "Want me to run a command or commit?",
-    "safari": "Want me to search or open a page?",
-    "chrome": "Want me to search or open a page?",
-    "finder": "Want me to list files or open something?",
-}
-
 
 @dataclass
 class CopilotHint:
@@ -41,57 +29,81 @@ def analyze_context(
     max_buttons: int = 20,
     warnings_enabled: bool = True,
     suggestions_enabled: bool = True,
+    lang: str = "en",
+    tree: Optional[dict] = None,
 ) -> list[CopilotHint]:
     """
     Analyze current AX Tree and return list of hints (suggestions and/or warnings).
     """
     hints: list[CopilotHint] = []
-    try:
-        tree = get_ax_tree(max_buttons=max_buttons, max_text_fields=5)
-    except Exception as e:
-        logger.debug("copilot analyze_context: %s", e)
-        return hints
+    if tree is None:
+        try:
+            tree = get_ax_tree(max_buttons=max_buttons, max_text_fields=5)
+        except Exception as e:
+            logger.debug("copilot analyze_context: %s", e)
+            return hints
 
     if tree.get("error"):
         return hints
 
     app_name = (tree.get("app") or "").strip()
     all_text: list[str] = []
+    all_window_titles: list[str] = []
 
     for w in tree.get("windows") or []:
-        t = (w.get("title") or "").strip()
-        if t:
-            all_text.append(t.lower())
+        title = (w.get("title") or "").strip()
+        if title:
+            all_window_titles.append(title)
+            all_text.append(title.lower())
     for b in tree.get("buttons") or []:
-        t = (b.get("title") or "").strip()
-        if t:
-            all_text.append(t.lower())
+        title = (b.get("title") or "").strip()
+        if title:
+            all_text.append(title.lower())
 
-    if warnings_enabled and app_name:
-        for kw in ERROR_RISK_KEYWORDS:
-            if any(kw in t for t in all_text):
-                hints.append(CopilotHint(
-                    kind="warning",
-                    message=f"Detected something related to \"{kw}\" on screen. Want me to investigate?",
-                    app=app_name,
-                ))
-                break
+    idle_seconds = int(
+        tree.get("idle_seconds")
+        or tree.get("idle_time_seconds")
+        or 0
+    )
+    idle_minutes = int(tree.get("idle_minutes") or 0)
+
+    if warnings_enabled and app_name and any(any(kw in text for kw in ERROR_RISK_KEYWORDS) for text in all_text):
+        if "terminal" in app_name.lower() or "iterm" in app_name.lower():
+            hints.append(CopilotHint(
+                kind="warning",
+                message=t("copilot_hint_terminal_error", lang),
+                app=app_name,
+            ))
+        else:
+            hints.append(CopilotHint(
+                kind="warning",
+                message=t("copilot_hint_warning_generic", lang),
+                app=app_name,
+            ))
 
     if suggestions_enabled and app_name:
         app_lower = app_name.lower()
-        for key, suggestion in APP_SUGGESTIONS.items():
-            if key in app_lower:
-                hints.append(CopilotHint(
-                    kind="suggestion",
-                    message=suggestion,
-                    app=app_name,
-                ))
-                break
+        window_text = " ".join(title.lower() for title in all_window_titles)
+
+        if "vscode" in app_lower or "visual studio code" in app_lower:
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_vscode", lang), app=app_name))
+        elif "terminal" in app_lower or "iterm" in app_lower:
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_terminal", lang), app=app_name))
+        elif any(browser in app_lower for browser in ("safari", "chrome", "firefox", "edge")):
+            if "pull request" in window_text or " /pull/" in window_text or " pr #" in window_text:
+                hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_github_pr", lang), app=app_name))
+            else:
+                hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_browser", lang), app=app_name))
+        elif "finder" in app_lower:
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_finder", lang), app=app_name))
         else:
-            hints.append(CopilotHint(
-                kind="suggestion",
-                message=f"You're in {app_name}. Want me to do something?",
-                app=app_name,
-            ))
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_generic", lang, app=app_name), app=app_name))
+
+    if suggestions_enabled and (idle_seconds >= 600 or idle_minutes >= 10):
+        hints.append(CopilotHint(
+            kind="suggestion",
+            message=t("copilot_hint_idle", lang),
+            app=app_name or None,
+        ))
 
     return hints

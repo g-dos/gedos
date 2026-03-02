@@ -16,7 +16,7 @@ _WHISPER_NOT_INSTALLED_MSG = (
 )
 
 
-def transcribe_audio(audio_path: Union[str, Path]) -> tuple[str, Optional[str]]:
+def transcribe_audio(audio_path: Union[str, Path], language_hint: Optional[str] = None) -> tuple[str, Optional[str]]:
     """
     Transcribe an audio file using local OpenAI Whisper.
 
@@ -40,7 +40,10 @@ def transcribe_audio(audio_path: Union[str, Path]) -> tuple[str, Optional[str]]:
 
     try:
         model = whisper.load_model("base")
-        result = model.transcribe(str(audio_path), fp16=False)
+        kwargs = {"fp16": False}
+        if language_hint:
+            kwargs["language"] = language_hint
+        result = model.transcribe(str(audio_path), **kwargs)
         text = (result.get("text") or "").strip()
         if not text:
             return ("", "Transcription returned empty text. Try speaking more clearly.")

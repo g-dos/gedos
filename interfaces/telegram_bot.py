@@ -43,6 +43,8 @@ _task_cancelled: bool = False
 _copilot_active: dict[int, bool] = {}
 _last_app_per_user: dict[int, str] = {}
 _last_copilot_message_per_user: dict[int, str] = {}
+_last_copilot_suggestion_at_per_user: dict[int, float] = {}
+_copilot_sensitivity_per_user: dict[int, str] = {}
 
 # Error recovery state for multi-step tasks
 _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
@@ -51,6 +53,11 @@ _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX = 10  # max commands per minute
 RATE_LIMIT_WINDOW = 60.0  # seconds
+_COPILOT_SENSITIVITY_SECONDS = {
+    "high": 30.0,
+    "medium": 60.0,
+    "low": 300.0,
+}
 
 _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
@@ -84,36 +91,36 @@ def _check_rate_limit(user_id: int) -> bool:
     return True
 
 
-def _format_ax_tree(tree: dict) -> str:
+def _format_ax_tree(tree: dict, lang: str = "en") -> str:
     err = tree.get("error")
     if err:
-        return f"Error: {err}"
+        return t("ax_error", lang, err=err)
     app = tree.get("app") or "?"
-    lines = [f"App: {app}"]
+    lines = [t("ax_app", lang, app=app)]
     for w in (tree.get("windows") or [])[:5]:
-        title = (w.get("title") or "").strip() or "(untitled)"
-        lines.append(f"  Window: {title}")
+        title = (w.get("title") or "").strip() or t("untitled", lang)
+        lines.append(t("ax_window", lang, title=title))
     btns = tree.get("buttons") or []
     if btns:
-        lines.append("Buttons: " + ", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15]))
+        lines.append(t("ax_buttons", lang, buttons=", ".join((b.get("title") or b.get("role") or "?") for b in btns[:15])))
     return "\n".join(lines)
 
 
-def _format_terminal_result(r: TerminalResult) -> str:
-    out = (r.stdout or "").strip() or "(no output)"
+def _format_terminal_result(r: TerminalResult, lang: str = "en") -> str:
+    out = (r.stdout or "").strip() or t("no_output", lang)
     err = (r.stderr or "").strip()
     if len(out) > 3500:
-        out = out[:3500] + "\n... (truncated)"
+        out = out[:3500] + t("truncated_suffix", lang)
     if r.success:
-        msg = f"✅ {r.command[:80]}\n\n{out}"
+        msg = t("terminal_success", lang, command=r.command[:80], output=out)
     elif r.return_code == 127:
-        msg = f"❌ Command not found: {r.command[:80]}"
+        msg = t("terminal_not_found", lang, command=r.command[:80])
     elif "timed out" in err.lower():
-        msg = f"⏱ {err}"
+        msg = t("terminal_timeout", lang, err=err)
     else:
-        msg = f"❌ {r.command[:80]} (code {r.return_code})\n\n{out}"
+        msg = t("terminal_failure", lang, command=r.command[:80], code=r.return_code, output=out)
     if err and "timed out" not in err.lower():
-        msg += f"\n\nstderr:\n{err[:500]}"
+        msg += t("terminal_stderr", lang, err=err[:500])
     return msg
 
 
@@ -134,6 +141,22 @@ def _user_lang(update: Update, text: Optional[str] = None) -> str:
     return get_user_language(str(uid)) or "en"
 
 
+def _copilot_sensitivity(user_id: int) -> str:
+    return _copilot_sensitivity_per_user.get(user_id, "medium")
+
+
+def _copilot_cooldown_seconds(user_id: int) -> float:
+    return _COPILOT_SENSITIVITY_SECONDS[_copilot_sensitivity(user_id)]
+
+
+def _copilot_sensitivity_label(user_id: int, lang: str) -> str:
+    return t(f"copilot_sensitivity_{_copilot_sensitivity(user_id)}", lang)
+
+
+def _localized_status_name(status: str, lang: str) -> str:
+    return t(f"status_{status}", lang)
+
+
 async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
     """
     Execute a step with retry logic and user decision on failure.
@@ -141,13 +164,12 @@ async def _execute_step_with_recovery(step, step_num: int, steps_count: int, pro
     import asyncio
     from core.orchestrator import _execute_single_step
     
-    await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step.action[:50]}...")
+    await progress_msg.edit_text(t("step_in_progress", lang, n=step_num, t=steps_count, step=step.action[:50] + "..."))
     result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
 
     if result.get('success', False):
         return result
 
-    first_error = result.get('result', 'Unknown error')[:100]
     await progress_msg.edit_text(t("step_retry", lang, n=step_num, t=steps_count))
 
     retry_result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
@@ -156,7 +178,7 @@ async def _execute_step_with_recovery(step, step_num: int, steps_count: int, pro
     if retry_result.get('success', False):
         return retry_result
     
-    retry_error = retry_result.get('result', 'Unknown error')[:100]
+    retry_error = retry_result.get('result', t("unknown_error", lang))[:100]
     decision_message = t("step_failed_continue", lang, n=step_num, err=retry_error)
     
     await progress_msg.edit_text(decision_message)
@@ -185,7 +207,7 @@ async def _execute_step_with_recovery(step, step_num: int, steps_count: int, pro
         # Clean up pending decision and continue
         if uid is not None and uid in _pending_step_decision:
             del _pending_step_decision[uid]
-        return {"success": False, "result": "Decision timeout - continuing", "agent_used": step.agent}
+        return {"success": False, "result": t("decision_timeout", lang), "agent_used": step.agent}
 
 
 async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
@@ -218,14 +240,14 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             for i, step in enumerate(plan.steps):
                 if _task_cancelled:
                     _task_status = "idle"
-                    await progress_msg.edit_text(f"⚠️ Task cancelled at step {i+1}/{steps_count}.")
-                    return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+                    await progress_msg.edit_text(t("task_cancelled_at_step", lang, n=i + 1, t=steps_count))
+                    return {"success": False, "result": t("task_cancelled", lang), "agent_used": "cancelled"}
                 
                 step_num = i + 1
                 
                 # Update progress before step
                 step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
-                await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
+                await progress_msg.edit_text(t("step_in_progress", lang, n=step_num, t=steps_count, step=step_desc))
                 
                 result = await _execute_step_with_recovery(
                     step, step_num, steps_count, progress_msg, uid, update, lang
@@ -235,16 +257,16 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                 if result.get('cancelled', False):
                     _task_status = "idle"
                     await progress_msg.edit_text(t("task_cancelled_user", lang, n=step_num, t=steps_count))
-                    return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+                    return {"success": False, "result": t("task_cancelled", lang), "agent_used": "cancelled"}
                 
                 # Update progress after step
                 if result.get('success', False):
-                    step_result = result.get('result', 'Completed')[:100]
-                    await progress_msg.edit_text(f"✅ Step {step_num}/{steps_count}: {step_result}")
-                    results.append(f"Step {step_num}: ✅ {step_result}")
+                    step_result = result.get('result', t("generic_completed", lang))[:100]
+                    await progress_msg.edit_text(t("step_success", lang, n=step_num, t=steps_count, result=step_result))
+                    results.append(t("task_summary_success", lang, n=step_num, result=step_result))
                 else:
-                    step_error = result.get('result', 'Unknown error')[:100]
-                    results.append(f"Step {step_num}: ❌ {step_error}")
+                    step_error = result.get('result', t("unknown_error", lang))[:100]
+                    results.append(t("task_summary_failure", lang, n=step_num, result=step_error))
                     overall_success = False
             
             # Final summary
@@ -253,11 +275,11 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             failure_count = len(results) - success_count
             
             summary = (t("task_completed", lang) if overall_success else t("task_finished_errors", lang)) + "\n\n"
-            summary += f"Steps: {success_count} successful, {failure_count} failed\n\n"
+            summary += t("task_summary_counts", lang, success=success_count, failed=failure_count) + "\n\n"
             summary += "\n".join(results)
             
             if len(summary) > 4000:
-                summary = summary[:4000] + "\n... (truncated)"
+                summary = summary[:4000] + t("truncated_suffix", lang)
                 
             await progress_msg.edit_text(summary)
             
@@ -283,7 +305,7 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
         
     except Exception as e:
         logger.exception("Multi-step task execution failed")
-        error_msg = f"Multi-step planning error: {str(e)[:300]}"
+        error_msg = t("multi_step_planning_error", lang, err=str(e)[:300])
         await progress_msg.edit_text(f"❌ {error_msg}")
         return {"success": False, "result": error_msg, "agent_used": "planner"}
 
@@ -292,6 +314,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
     uid = _user_id(update)
+    lang = _user_lang(update)
     
     # Check if first time user (no conversation history)
     if uid is not None:
@@ -303,103 +326,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         is_first_time = True
 
     if is_first_time:
-        # Onboarding flow for new users
-        welcome = (
-            "👋 Welcome to Gedos!\n\n"
-            "I'm your autonomous AI agent for macOS. I can execute terminal commands, "
-            "control your GUI, browse the web, and answer questions using a local LLM.\n\n"
-            "**Choose your mode:**\n\n"
-            "🤖 **Pilot Mode** — Fully autonomous. Send me a task, leave, and I'll execute and report back.\n"
-            "   Example: `/task git status`\n\n"
-            "👥 **Copilot Mode** — Proactive assistant. I monitor your screen and suggest actions in real-time.\n"
-            "   Enable with: `/copilot on`\n\n"
-            "**Quick Start:**\n"
-            "• `/task <description>` — Run any task\n"
-            "• `/web <url>` — Browse the web\n"
-            "• `/ask <question>` — Ask the LLM\n"
-            "• `/help` — Full command list\n"
-            "• `/ping` — Health check\n\n"
-            "Try it now: `/task ls -la` or `/ask what is Python?`"
-        )
+        welcome = t("start_first_time", lang)
         await update.message.reply_text(welcome)
         if uid is not None:
             add_conversation(str(uid), "/start", "First time onboarding sent")
     else:
-        # Returning user
-        welcome = (
-            "Hi, I'm Gedos. Your autonomous agent on Mac.\n\n"
-            "**Pilot Mode** — Send a task and I'll execute it.\n"
-            "**Copilot Mode** — `/copilot on` — proactive suggestions.\n\n"
-            "Commands:\n"
-            "- `/task <description>` — Run a task\n"
-            "- `/status` — Task status\n"
-            "- `/stop` — Stop execution\n"
-            "- `/copilot on|off` — Copilot Mode\n"
-            "- `/memory` — Task history\n"
-            "- `/web <url>` — Browse the web\n"
-            "- `/ask <question>` — Ask the LLM\n"
-            "- `/ping` — Health check\n"
-            "- `/help` — List commands"
-        )
-        await update.message.reply_text(welcome)
+        await update.message.reply_text(t("start_returning", lang))
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     uid = _user_id(update)
+    lang = _user_lang(update)
     is_copilot_on = _copilot_active.get(uid, False) if uid is not None else False
 
     if is_copilot_on:
-        # Copilot Mode help
-        help_text = (
-            "**Copilot Mode Active** 👥\n\n"
-            "I'm monitoring your screen and will send proactive suggestions and warnings.\n\n"
-            "**Commands:**\n"
-            "/copilot off — Disable Copilot\n"
-            "/task <description> — Run a task manually\n"
-            "/status — Current task status\n"
-            "/stop — Stop running task\n"
-            "/memory — Task history\n"
-            "/web <url> — Browse the web\n"
-            "/ask <question> — Ask the LLM\n"
-            "/schedule — Create scheduled tasks\n"
-            "/schedules — List active schedules\n" 
-            "/unschedule <id> — Remove a schedule\n"
-            "/ping — Health check\n\n"
-            "**How Copilot works:**\n"
-            "• Checks screen every 10 seconds\n"
-            "• Detects active app (Terminal, VS Code, Safari, etc.)\n"
-            "• Warns if errors appear on screen\n"
-            "• Suggests next actions based on context"
-        )
+        help_text = t("help_copilot", lang)
     else:
-        # Pilot Mode help
-        help_text = (
-            "**Pilot Mode** 🤖\n\n"
-            "Send me tasks and I'll execute them autonomously.\n\n"
-            "**Commands:**\n"
-            "/start — Welcome message\n"
-            "/task <description> — Run a task\n"
-            "/status — Current task status\n"
-            "/stop — Stop running task\n"
-            "/copilot on — Enable Copilot Mode\n"
-            "/memory — Task history\n"
-            "/web <url> — Browse the web\n"
-            "/ask <question> — Ask the LLM\n"
-            "/schedule — Create scheduled tasks\n"
-            "/schedules — List active schedules\n"
-            "/unschedule <id> — Remove a schedule\n"
-            "/ping — Health check\n\n"
-            "**Examples:**\n"
-            "`/task ls -la`\n"
-            "`/task git status`\n"
-            "`/task navigate to google.com`\n"
-            "`/ask what is Python?`\n"
-            "`/schedule daily 09:00 \"check HN and summarize\"`\n"
-            "`/schedule weekly monday 14:00 \"backup files\"`\n\n"
-            "Enable Copilot for real-time assistance: `/copilot on`"
-        )
+        help_text = t("help_pilot", lang)
     await update.message.reply_text(help_text)
 
 
@@ -430,7 +375,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if any(kw in low for kw in ("list elements", "screen elements", "listar elementos", "ax tree", "what do you see", "o que você vê")):
         _task_status = "idle"
         tree = get_ax_tree(max_buttons=25, max_text_fields=10)
-        reply = _format_ax_tree(tree)
+        reply = _format_ax_tree(tree, lang)
         await update.message.reply_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply)
@@ -450,7 +395,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if btn_name:
             ok = click_button(btn_name)
             _task_status = "idle"
-            reply = "Clicked the button." if ok else f"Button '{btn_name}' not found."
+            reply = t("clicked_button", lang) if ok else t("button_not_found", lang, button=btn_name)
             await update.message.reply_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
@@ -460,11 +405,11 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if _looks_like_shell_command(payload):
         if _task_cancelled:
             _task_status = "idle"
-            await update.message.reply_text("⚠️ Task cancelled.")
+            await update.message.reply_text(t("task_cancelled", lang))
             return
         result = run_shell(payload)
         _task_status = "idle"
-        reply = _format_terminal_result(result)
+        reply = _format_terminal_result(result, lang)
         await update.message.reply_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
@@ -491,7 +436,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.exception("Multi-step task failed: %s", payload[:80])
             _task_status = "idle"
-            reply = f"Multi-step execution error: {str(e)[:300]}"
+            reply = t("multi_step_execution_error", lang, err=str(e)[:300])
             await progress_msg.edit_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
@@ -512,16 +457,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.exception("Orchestrator failed for task: %s", payload[:80])
             _task_status = "idle"
-            reply = f"Execution error: {str(e)[:300]}"
+            reply = t("execution_error", lang, err=str(e)[:300])
             await progress_msg.edit_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
                 memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
             return
         _task_status = "idle"
-        reply = out.get("result") or "No result."
+        reply = out.get("result") or t("no_result", lang)
         if len(reply) > 4000:
-            reply = reply[:4000] + "\n... (truncated)"
+            reply = reply[:4000] + t("truncated_suffix", lang)
         await progress_msg.edit_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
@@ -537,9 +482,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if _task_status == "idle" or not _current_task:
         await update.message.reply_text(t("no_task_running", lang))
         return
-    status_msg = f"Status: {_task_status}\nTask: {_current_task[:150]}"
-    if len(_current_task) > 150:
-        status_msg += "..."
+    suffix = t("status_suffix", lang) if len(_current_task) > 150 else ""
+    status_msg = t(
+        "status_active",
+        lang,
+        status=_localized_status_name(_task_status, lang),
+        task=_current_task[:150],
+        suffix=suffix,
+    )
     await update.message.reply_text(status_msg)
 
 
@@ -552,7 +502,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _task_cancelled = True
         _task_status = "stopped"
         logger.info("Task cancellation requested")
-        await update.message.reply_text(t("task_cancelled", lang))
+        await update.message.reply_text(t("task_cancelled_request", lang))
     else:
         await update.message.reply_text(t("no_task_running", lang))
 
@@ -637,12 +587,14 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         from tools.voice import transcribe_audio
 
         file = await context.bot.get_file(voice.file_id)
+        whisper_lang = lang if len(lang) == 2 else None
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             await file.download_to_drive(tmp_path)
-            transcribed, error = transcribe_audio(tmp_path)
+            await status_msg.edit_text(t("voice_detected", lang, hint=whisper_lang or "auto"))
+            transcribed, error = transcribe_audio(tmp_path, language_hint=whisper_lang)
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -697,18 +649,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Parse the command
         schedule_data = parse_schedule_command(update.message.text)
         if not schedule_data:
-            help_text = (
-                "❌ Invalid format. Use:\n\n"
-                "**Explicit:**\n"
-                "• `daily 09:00 \"check HN\"`\n"
-                "• `once 14:30 \"remind me\"`\n"
-                "• `weekly monday 09:00 \"report\"`\n\n"
-                "**Natural language:**\n"
-                "• `every day at 9am \"check HN\"`\n"
-                "• `tomorrow at 3pm \"remind me\"`\n"
-                "• `every monday at 9am \"report\"`"
-            )
-            await update.message.reply_text(help_text)
+            await update.message.reply_text(t("schedule_invalid_format", lang))
             return
         
         # Create the schedule
@@ -728,14 +669,14 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         elif task.frequency == "weekly":
             confirm_msg = t("scheduled_weekly", lang, day=task.day_of_week.title(), time=task.schedule_time, task=task.task_description)
         
-        confirm_msg += f"\n\nSchedule ID: #{task.id}"
+        confirm_msg += "\n\n" + t("schedule_id_line", lang, id=task.id)
         await update.message.reply_text(confirm_msg)
         
         logger.info(f"User {uid} created schedule #{task.id}")
         
     except Exception as e:
         logger.exception("Failed to create schedule")
-        await update.message.reply_text(f"❌ Failed to create schedule: {str(e)[:200]}")
+        await update.message.reply_text(t("schedule_create_failed", lang, err=str(e)[:200]))
 
 
 async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -761,31 +702,31 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(t("no_schedules", lang))
             return
 
-        table = Table(title="📅 Your Schedules", show_header=True, header_style="bold")
-        table.add_column("ID", style="cyan", width=4)
-        table.add_column("When", style="green", width=22)
-        table.add_column("Task", style="white", max_width=35)
-        table.add_column("Last run", style="dim", width=12)
+        table = Table(title=t("schedules_title", lang), show_header=True, header_style="bold")
+        table.add_column(t("schedules_col_id", lang), style="cyan", width=4)
+        table.add_column(t("schedules_col_when", lang), style="green", width=22)
+        table.add_column(t("schedules_col_task", lang), style="white", max_width=35)
+        table.add_column(t("schedules_col_last_run", lang), style="dim", width=12)
 
         for task in schedules:
             when = f"{task.schedule_time}"
             if task.frequency == "daily":
-                when = f"Daily @ {task.schedule_time}"
+                when = t("schedule_when_daily", lang, time=task.schedule_time)
             elif task.frequency == "weekly":
-                when = f"{task.day_of_week.title()} @ {task.schedule_time}"
+                when = t("schedule_when_weekly", lang, day=task.day_of_week.title(), time=task.schedule_time)
             elif task.frequency == "once":
-                when = f"Once @ {task.schedule_time}"
+                when = t("schedule_when_once", lang, time=task.schedule_time)
             last_run = task.last_run.strftime("%m/%d %H:%M") if task.last_run else "—"
             table.add_row(str(task.id), when, task.task_description[:35], last_run)
 
         buf = io.StringIO()
         Console(file=buf, force_terminal=True, width=78).print(table)
-        msg = buf.getvalue() + "\nUse /unschedule <id> to remove."
+        msg = buf.getvalue() + "\n" + t("schedules_remove_hint", lang)
         await update.message.reply_text(msg)
 
     except Exception as e:
         logger.exception("Failed to list schedules")
-        await update.message.reply_text(f"❌ Failed to list schedules: {str(e)[:200]}")
+        await update.message.reply_text(t("schedule_list_failed", lang, err=str(e)[:200]))
 
 
 async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -805,34 +746,34 @@ async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Parse task ID from command
         parts = update.message.text.strip().split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Usage: `/unschedule <id>`\nExample: `/unschedule 5`")
+            await update.message.reply_text(t("schedule_usage_unschedule", lang))
             return
         
         try:
             task_id = int(parts[1])
         except ValueError:
-            await update.message.reply_text("❌ Invalid ID. Use a number like `/unschedule 5`")
+            await update.message.reply_text(t("schedule_invalid_id", lang))
             return
         
         # Verify ownership
         task = get_scheduled_task_by_id(task_id)
         if not task:
-            await update.message.reply_text(f"❌ Schedule #{task_id} not found.")
+            await update.message.reply_text(t("schedule_not_found", lang, id=task_id))
             return
         
         if task.user_id != str(uid):
-            await update.message.reply_text(f"❌ You can only unschedule your own tasks.")
+            await update.message.reply_text(t("schedule_not_owner", lang))
             return
         
         if remove_schedule(task_id):
             await update.message.reply_text(t("schedule_removed", lang, id=task_id, task=task.task_description[:50]))
             logger.info(f"User {uid} removed schedule #{task_id}")
         else:
-            await update.message.reply_text(f"❌ Failed to remove schedule #{task_id}")
+            await update.message.reply_text(t("schedule_remove_failed", lang, id=task_id))
         
     except Exception as e:
         logger.exception("Failed to unschedule task")
-        await update.message.reply_text(f"❌ Failed to unschedule: {str(e)[:200]}")
+        await update.message.reply_text(t("unschedule_failed", lang, err=str(e)[:200]))
 
 
 async def _execute_task_autonomously(task: str, user_id: int) -> dict:
@@ -847,7 +788,7 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
         result = run_task(task, language=lang)
         
         # Store conversation
-        add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', 'Completed')))
+        add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', t("generic_completed", lang))))
         
         # Send result to user via Telegram
         try:
@@ -857,9 +798,9 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
             bot = Bot(token=get_telegram_token())
             
             if result.get('success', False):
-                message = f"✅ Scheduled task completed:\n{task}\n\nResult: {result.get('result', 'Done')[:500]}"
+                message = t("scheduled_task_completed", lang, task=task, result=result.get("result", t("generic_completed", lang))[:500])
             else:
-                message = f"❌ Scheduled task failed:\n{task}\n\nError: {result.get('result', 'Unknown error')[:500]}"
+                message = t("scheduled_task_failed", lang, task=task, result=result.get("result", t("unknown_error", lang))[:500])
             
             await bot.send_message(chat_id=user_id, text=message)
             
@@ -870,23 +811,47 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
         
     except Exception as e:
         logger.exception(f"Failed to execute scheduled task: {task}")
-        return {"success": False, "result": f"Execution failed: {str(e)}", "agent_used": "scheduler"}
+        return {"success": False, "result": t("scheduled_task_execution_failed", "en", err=str(e)), "agent_used": "scheduler"}
 
 
 async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Toggle Copilot Mode: /copilot on | /copilot off."""
+    """Manage Copilot Mode: on | off | status | sensitivity."""
     if not update.message or not update.message.text:
         return
     uid = _user_id(update)
     if uid is None:
         return
+    lang = _user_lang(update)
     text = update.message.text.strip().lower()
+    if " status" in text or text.endswith("status"):
+        last_ts = _last_copilot_suggestion_at_per_user.get(uid)
+        last_value = t("copilot_last_never", lang)
+        if last_ts is not None:
+            last_value = t("copilot_last_seconds_ago", lang, seconds=int(max(0, time() - last_ts)))
+        await update.message.reply_text(
+            t(
+                "copilot_status",
+                lang,
+                active=t("copilot_state_active", lang) if _copilot_active.get(uid, False) else t("copilot_state_inactive", lang),
+                sensitivity=_copilot_sensitivity_label(uid, lang),
+                last=last_value,
+            )
+        )
+        return
+    if " sensitivity " in f" {text} ":
+        requested = text.split("sensitivity", 1)[-1].strip().split()[0] if text.split("sensitivity", 1)[-1].strip() else ""
+        if requested not in _COPILOT_SENSITIVITY_SECONDS:
+            await update.message.reply_text(t("copilot_sensitivity_usage", lang))
+            return
+        _copilot_sensitivity_per_user[uid] = requested
+        await update.message.reply_text(t("copilot_sensitivity_set", lang, sensitivity=t(f"copilot_sensitivity_{requested}", lang)))
+        return
     if " off" in text or text.endswith("off"):
         _copilot_active[uid] = False
-        await update.message.reply_text("Copilot Mode off.")
+        await update.message.reply_text(t("copilot_off", lang))
     else:
         _copilot_active[uid] = True
-        await update.message.reply_text("Copilot Mode on. I'll monitor context and suggest when relevant.")
+        await update.message.reply_text(t("copilot_on", lang))
 
 
 async def _send_copilot_suggestion(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str) -> None:
@@ -898,13 +863,17 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     """Show recent tasks from memory."""
     if not update.message:
         return
+    lang = _user_lang(update)
     tasks = get_recent_tasks(limit=10)
     if not tasks:
-        await update.message.reply_text("No tasks in history.")
+        await update.message.reply_text(t("memory_empty", lang))
         return
-    lines = ["Recent tasks:"]
-    for t in tasks:
-        lines.append(f"- [{t.status}] {t.description[:50]}..." if len(t.description) > 50 else f"- [{t.status}] {t.description}")
+    lines = [t("memory_header", lang)]
+    for task in tasks:
+        if len(task.description) > 50:
+            lines.append(t("memory_item_truncated", lang, status=task.status, description=task.description[:50]))
+        else:
+            lines.append(t("memory_item", lang, status=task.status, description=task.description))
     await update.message.reply_text("\n".join(lines))
 
 
@@ -913,19 +882,20 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    lang = _user_lang(update, text)
     url = text[5:].strip() if text.lower().startswith("/web") else text
     if not url:
-        await update.message.reply_text("Usage: /web <url>")
+        await update.message.reply_text(t("usage_web", lang))
         return
     from agents.web_agent import navigate
     r = navigate(url)
     if r.success:
-        msg = f"Page loaded: {r.title or r.url}\n{r.url}"
+        msg = t("web_page_loaded", lang, title=r.title or r.url, url=r.url)
         if r.content_preview:
             msg += "\n\n" + (r.content_preview[:500] + "..." if len(r.content_preview) > 500 else r.content_preview)
         await update.message.reply_text(msg)
     else:
-        await update.message.reply_text(f"Error: {r.message}")
+        await update.message.reply_text(t("web_error", lang, err=r.message))
 
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -941,7 +911,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from core.llm import complete
     reply = complete(question, max_tokens=1024, language=lang)
     if len(reply) > 4000:
-        reply = reply[:4000] + "\n... (truncated)"
+        reply = reply[:4000] + t("truncated_suffix", lang)
     await update.message.reply_text(reply)
 
 
@@ -954,26 +924,41 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         warnings_ok = copilot_cfg.get("warnings", True)
         if not suggestions_ok and not warnings_ok:
             return
-        hints = analyze_context(warnings_enabled=warnings_ok, suggestions_enabled=suggestions_ok)
-        if not hints:
+        tree = get_ax_tree(max_buttons=20, max_text_fields=5)
+        if tree.get("error"):
             return
-        hint = next((h for h in hints if h.kind == "warning"), hints[0])
-        msg = f"Copilot: {hint.message}"
-        app_name = hint.app or ""
         for uid, active in list(_copilot_active.items()):
             if not active:
                 continue
+            lang = get_user_language(str(uid)) or "en"
+            hints = analyze_context(
+                warnings_enabled=warnings_ok,
+                suggestions_enabled=suggestions_ok,
+                lang=lang,
+                tree=tree,
+            )
+            if not hints:
+                continue
+            hint = next((h for h in hints if h.kind == "warning"), hints[0])
+            if hint.kind == "suggestion":
+                last_ts = _last_copilot_suggestion_at_per_user.get(uid)
+                if last_ts is not None and (time() - last_ts) < _copilot_cooldown_seconds(uid):
+                    continue
+            msg = hint.message
             last_msg = _last_copilot_message_per_user.get(uid)
             if last_msg == msg:
                 continue
+            app_name = hint.app or ""
             last_app = _last_app_per_user.get(uid)
             if hint.kind == "suggestion" and last_app == app_name:
                 continue
             if app_name:
                 _last_app_per_user[uid] = app_name
             try:
-                await context.bot.send_message(chat_id=uid, text=msg)
+                await _send_copilot_suggestion(context, uid, msg)
                 _last_copilot_message_per_user[uid] = msg
+                if hint.kind == "suggestion":
+                    _last_copilot_suggestion_at_per_user[uid] = time()
             except Exception:
                 pass
     except Exception as e:
