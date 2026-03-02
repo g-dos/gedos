@@ -2,6 +2,16 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.1] — 2026-03
+
+### Fixed
+- **agents/web_agent.py**: confirmed async_playwright() migration complete, fully compatible with asyncio loop
+- **interfaces/telegram_bot.py**: _check_rate_limit function properly defined and working (10 commands/min per user)
+- **config.yaml**: default LLM model confirmed as llama3.2 for optimal performance
+- **.env.example**: LLM_PROVIDER and OLLAMA_MODEL defaults properly set for new installations
+
+---
+
 ## [0.9.0] — 2026-03
 
 ### Added
