@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes
 
 # Import Gedos modules
 from interfaces.telegram_bot import _run_task_with_progress_updates, _task_status, _task_cancelled
+import interfaces.telegram_bot as telegram_bot
 from core.task_planner import plan_task, TaskStep, TaskPlan
 from agents.terminal_agent import execute_step as terminal_execute_step
 
@@ -88,15 +89,23 @@ class TestMultiStepExecution:
         
         with patch('core.task_planner.plan_task', return_value=plan):
             with patch('core.task_planner._is_multi_step_task', return_value=True):
-                # Mock user decision to continue (simulate /yes)
-                with patch('interfaces.telegram_bot._pending_step_decision', {}):
-                    # Execute the task - it should fail but handle gracefully
-                    result = await _run_task_with_progress_updates(
+                pending_decisions = {}
+                with patch('interfaces.telegram_bot._pending_step_decision', pending_decisions):
+                    task = asyncio.create_task(_run_task_with_progress_updates(
                         "test failure",
                         mock_progress_msg,
                         12345,
                         mock_update
-                    )
+                    ))
+
+                    for _ in range(20):
+                        await asyncio.sleep(0)
+                        if 12345 in pending_decisions:
+                            break
+
+                    assert 12345 in pending_decisions
+                    await pending_decisions[12345]["callback"](True)
+                    result = await asyncio.wait_for(task, timeout=2.0)
         
         # Task should complete but with failure
         assert result["success"] is False
@@ -131,15 +140,14 @@ class TestMultiStepExecution:
                 return original_execute(step)
             else:
                 # Simulate cancellation before subsequent steps
-                global _task_cancelled
-                _task_cancelled = True
+                telegram_bot._task_cancelled = True
                 return original_execute(step)
         
         with patch('core.task_planner.plan_task', return_value=plan):
             with patch('core.task_planner._is_multi_step_task', return_value=True):
                 with patch('agents.terminal_agent.execute_step', side_effect=mock_execute_with_cancel):
                     # Reset cancellation state
-                    _task_cancelled = False
+                    telegram_bot._task_cancelled = False
                     
                     # Execute the task
                     result = await _run_task_with_progress_updates(
@@ -157,7 +165,7 @@ class TestMultiStepExecution:
         cancel_messages = [msg for msg in call_args if "cancel" in msg.lower() or "stop" in msg.lower()]
         
         # Reset global state
-        _task_cancelled = False
+        telegram_bot._task_cancelled = False
 
 
 class TestTerminalSelfCorrection:

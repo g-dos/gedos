@@ -18,6 +18,9 @@ def _route_task(task: str) -> AgentKind:
     # Priority: GUI commands that mention specific apps (safari, chrome, firefox, etc.)
     if any(app in low for app in ("safari", "chrome", "firefox", "edge")) and any(cmd in low for cmd in ("open", "abrir", "launch")):
         return "gui"
+
+    if low.startswith("open http://") or low.startswith("open https://"):
+        return "web"
     
     if any(low.startswith(p) for p in ("navegar", "navigate", "buscar no google", "search ")) or ("http" in low and "open" not in low) or (".com" in low and "open" not in low):
         return "web"

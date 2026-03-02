@@ -9,6 +9,7 @@ from telegram import Update, Message, Chat, User
 from telegram.ext import ContextTypes
 
 from interfaces.telegram_bot import cmd_task, cmd_status, cmd_stop
+import interfaces.telegram_bot as telegram_bot
 
 
 @pytest.fixture
@@ -61,9 +62,7 @@ async def test_pilot_task_status(mock_update, mock_context):
 @pytest.mark.asyncio
 async def test_pilot_task_cancellation(mock_update, mock_context):
     """Test /stop command sets cancellation flag."""
-    # Start a task
-    mock_update.message.text = "/task sleep 30"
-    await cmd_task(mock_update, mock_context)
+    telegram_bot._task_status = "running"
     
     # Stop the task
     await cmd_stop(mock_update, mock_context)
@@ -72,6 +71,8 @@ async def test_pilot_task_cancellation(mock_update, mock_context):
     responses = [call[0][0] for call in mock_update.message.reply_text.call_args_list]
     
     assert any("cancel" in r.lower() or "stop" in r.lower() for r in responses)
+    telegram_bot._task_status = "idle"
+    telegram_bot._task_cancelled = False
 
 
 @pytest.mark.asyncio

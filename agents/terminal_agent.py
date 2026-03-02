@@ -4,6 +4,7 @@ Captures stdout/stderr and returns structured result.
 """
 
 import logging
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from core.retry import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30
+_STEP_CWD: Optional[str] = None
 
 
 @dataclass
@@ -136,6 +138,49 @@ def run_shell(
     return result
 
 
+def reset_step_cwd() -> None:
+    """Reset the per-task working directory used by execute_step."""
+    global _STEP_CWD
+    _STEP_CWD = None
+
+
+def _handle_cd_command(command: str) -> Optional[dict[str, str]]:
+    """Handle `cd` as a persistent step-local directory change."""
+    global _STEP_CWD
+
+    parts = shlex.split(command)
+    if not parts or parts[0] != "cd":
+        return None
+
+    if len(parts) == 1:
+        target = os.path.expanduser("~")
+    else:
+        raw_target = os.path.expanduser(parts[1])
+        if os.path.isabs(raw_target):
+            target = raw_target
+        elif _STEP_CWD:
+            target = os.path.join(_STEP_CWD, raw_target)
+        else:
+            target = os.path.abspath(raw_target)
+
+    target = os.path.abspath(target)
+    if not os.path.isdir(target):
+        return {
+            "success": False,
+            "result": f"stderr: Directory not found: {target}",
+            "agent_used": "terminal",
+            "command": command,
+        }
+
+    _STEP_CWD = target
+    return {
+        "success": True,
+        "result": f"Changed directory to {target}",
+        "agent_used": "terminal",
+        "command": command,
+    }
+
+
 def _correct_command_with_llm(failed_command: str, error_output: str) -> str:
     """
     Use LLM to suggest a corrected command based on the error.
@@ -186,10 +231,13 @@ def execute_step(step) -> dict[str, str]:
         Dict with success, result, agent_used fields
     """
     try:
-        from typing import Any
-        
+        action = step.action.strip()
+        cd_result = _handle_cd_command(action)
+        if cd_result is not None:
+            return cd_result
+
         # First attempt
-        result = run_shell(step.action)
+        result = run_shell(action, cwd=_STEP_CWD)
         
         # If successful, return immediately
         if result.success:
@@ -205,14 +253,20 @@ def execute_step(step) -> dict[str, str]:
         
         # Command failed, try self-correction
         error_output = result.stderr or result.stdout or "Unknown error"
-        logger.info(f"Command failed, attempting self-correction: {step.action}")
+        logger.info(f"Command failed, attempting self-correction: {action}")
         
-        corrected_command = _correct_command_with_llm(step.action, error_output)
+        corrected_command = _correct_command_with_llm(action, error_output)
         
         # Only retry if LLM suggested a different command
-        if corrected_command != step.action:
+        if corrected_command != action:
             logger.info(f"Retrying with corrected command: {corrected_command}")
-            corrected_result = run_shell(corrected_command)
+            corrected_cd_result = _handle_cd_command(corrected_command.strip())
+            if corrected_cd_result is not None:
+                corrected_cd_result["result"] = f"Self-corrected: {corrected_cd_result['result']}"
+                corrected_cd_result["original_command"] = action
+                return corrected_cd_result
+
+            corrected_result = run_shell(corrected_command, cwd=_STEP_CWD)
             
             if corrected_result.success:
                 out = (corrected_result.stdout or "").strip() or "(no output)"
@@ -223,7 +277,7 @@ def execute_step(step) -> dict[str, str]:
                     "result": f"Self-corrected: {out}",
                     "agent_used": "terminal",
                     "command": corrected_command,
-                    "original_command": step.action
+                    "original_command": action
                 }
         
         # Format original error for user
@@ -240,7 +294,7 @@ def execute_step(step) -> dict[str, str]:
             "success": False,
             "result": msg,
             "agent_used": "terminal",
-            "command": step.action
+            "command": action
         }
         
     except Exception as e:

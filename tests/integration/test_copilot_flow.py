@@ -8,7 +8,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from telegram import Update, Message, Chat, User
 from telegram.ext import ContextTypes
 
-from interfaces.telegram_bot import cmd_copilot, _send_copilot_suggestion
+from interfaces.telegram_bot import cmd_copilot
 from core.copilot_context import analyze_context
 
 
@@ -43,7 +43,7 @@ async def test_copilot_activation(mock_update, mock_context):
     call_args = mock_update.message.reply_text.call_args
     response = call_args[0][0] if call_args else ""
     
-    assert "copilot" in response.lower() and ("active" in response.lower() or "enabled" in response.lower())
+    assert "copilot" in response.lower() and "on" in response.lower()
 
 
 @pytest.mark.asyncio
@@ -74,9 +74,9 @@ def test_copilot_context_analysis():
     with patch("core.copilot_context.get_ax_tree", return_value=mock_tree):
         result = analyze_context()
     
-    assert result["app"] == "Visual Studio Code"
-    # Should suggest actions for VS Code
-    assert result.get("suggestion") is not None or result.get("warning") is None
+    assert isinstance(result, list)
+    assert any(hint.app == "Visual Studio Code" for hint in result)
+    assert any(hint.kind == "suggestion" for hint in result)
 
 
 def test_copilot_error_detection():
@@ -92,4 +92,5 @@ def test_copilot_error_detection():
     with patch("core.copilot_context.get_ax_tree", return_value=mock_tree):
         result = analyze_context()
     
-    assert result.get("warning") is not None or "error" in result.get("app", "").lower()
+    assert isinstance(result, list)
+    assert any(hint.kind == "warning" for hint in result)

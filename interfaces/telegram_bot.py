@@ -197,84 +197,89 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
     try:
         from core.task_planner import plan_task
         from core.orchestrator import _execute_single_step
-        
-        plan = plan_task(task, language=lang)
-        
-        if not plan.is_multi_step or not plan.steps:
-            from core.orchestrator import run_single_step_task
-            return run_single_step_task(task, language=lang)
+        from agents.terminal_agent import reset_step_cwd
 
-        steps_count = len(plan.steps)
-        await progress_msg.edit_text(t("planning_complete", lang, n=steps_count))
+        reset_step_cwd()
+        try:
+            plan = plan_task(task, language=lang)
         
-        results = []
-        overall_success = True
-        agents_used = []
-        
-        # Execute each step with progress updates
-        for i, step in enumerate(plan.steps):
-            if _task_cancelled:
-                _task_status = "idle"
-                await progress_msg.edit_text(f"⚠️ Task cancelled at step {i+1}/{steps_count}.")
-                return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+            if not plan.is_multi_step or not plan.steps:
+                from core.orchestrator import run_single_step_task
+                return run_single_step_task(task, language=lang)
+
+            steps_count = len(plan.steps)
+            await progress_msg.edit_text(t("planning_complete", lang, n=steps_count))
             
-            step_num = i + 1
+            results = []
+            overall_success = True
+            agents_used = []
             
-            # Update progress before step
-            step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
-            await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
+            # Execute each step with progress updates
+            for i, step in enumerate(plan.steps):
+                if _task_cancelled:
+                    _task_status = "idle"
+                    await progress_msg.edit_text(f"⚠️ Task cancelled at step {i+1}/{steps_count}.")
+                    return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+                
+                step_num = i + 1
+                
+                # Update progress before step
+                step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
+                await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
+                
+                result = await _execute_step_with_recovery(
+                    step, step_num, steps_count, progress_msg, uid, update, lang
+                )
+                agents_used.append(result.get('agent_used', step.agent))
+                
+                if result.get('cancelled', False):
+                    _task_status = "idle"
+                    await progress_msg.edit_text(t("task_cancelled_user", lang, n=step_num, t=steps_count))
+                    return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+                
+                # Update progress after step
+                if result.get('success', False):
+                    step_result = result.get('result', 'Completed')[:100]
+                    await progress_msg.edit_text(f"✅ Step {step_num}/{steps_count}: {step_result}")
+                    results.append(f"Step {step_num}: ✅ {step_result}")
+                else:
+                    step_error = result.get('result', 'Unknown error')[:100]
+                    results.append(f"Step {step_num}: ❌ {step_error}")
+                    overall_success = False
             
-            result = await _execute_step_with_recovery(
-                step, step_num, steps_count, progress_msg, uid, update, lang
-            )
-            agents_used.append(result.get('agent_used', step.agent))
+            # Final summary
+            _task_status = "idle"
+            success_count = sum(1 for r in results if "✅" in r)
+            failure_count = len(results) - success_count
             
-            if result.get('cancelled', False):
-                _task_status = "idle"
-                await progress_msg.edit_text(t("task_cancelled_user", lang, n=step_num, t=steps_count))
-                return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
+            summary = (t("task_completed", lang) if overall_success else t("task_finished_errors", lang)) + "\n\n"
+            summary += f"Steps: {success_count} successful, {failure_count} failed\n\n"
+            summary += "\n".join(results)
             
-            # Update progress after step
-            if result.get('success', False):
-                step_result = result.get('result', 'Completed')[:100]
-                await progress_msg.edit_text(f"✅ Step {step_num}/{steps_count}: {step_result}")
-                results.append(f"Step {step_num}: ✅ {step_result}")
-            else:
-                step_error = result.get('result', 'Unknown error')[:100]
-                results.append(f"Step {step_num}: ❌ {step_error}")
-                overall_success = False
-        
-        # Final summary
-        _task_status = "idle"
-        success_count = sum(1 for r in results if "✅" in r)
-        failure_count = len(results) - success_count
-        
-        summary = (t("task_completed", lang) if overall_success else t("task_finished_errors", lang)) + "\n\n"
-        summary += f"Steps: {success_count} successful, {failure_count} failed\n\n"
-        summary += "\n".join(results)
-        
-        if len(summary) > 4000:
-            summary = summary[:4000] + "\n... (truncated)"
+            if len(summary) > 4000:
+                summary = summary[:4000] + "\n... (truncated)"
+                
+            await progress_msg.edit_text(summary)
             
-        await progress_msg.edit_text(summary)
-        
-        # Store in memory
-        if uid is not None:
-            add_conversation(str(uid), task, summary[:500])
-            agents_summary = ", ".join(set(agents_used))
-            memory_add_task(
-                description=task, 
-                status="completed" if overall_success else "failed", 
-                agent_used=f"multi-step ({agents_summary})", 
-                result=summary[:1000]
-            )
-        
-        return {
-            "success": overall_success,
-            "result": summary,
-            "agent_used": f"multi-step ({', '.join(set(agents_used))})",
-            "steps_completed": len(results)
-        }
+            # Store in memory
+            if uid is not None:
+                add_conversation(str(uid), task, summary[:500])
+                agents_summary = ", ".join(set(agents_used))
+                memory_add_task(
+                    description=task, 
+                    status="completed" if overall_success else "failed", 
+                    agent_used=f"multi-step ({agents_summary})", 
+                    result=summary[:1000]
+                )
+            
+            return {
+                "success": overall_success,
+                "result": summary,
+                "agent_used": f"multi-step ({', '.join(set(agents_used))})",
+                "steps_completed": len(results)
+            }
+        finally:
+            reset_step_cwd()
         
     except Exception as e:
         logger.exception("Multi-step task execution failed")
