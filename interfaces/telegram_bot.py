@@ -660,9 +660,14 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not schedule_data:
             help_text = (
                 "❌ Invalid format. Use:\n\n"
-                "• `/schedule daily 09:00 \"check HN and summarize\"`\n"
-                "• `/schedule once 14:30 \"remind me to review PR\"`\n"
-                "• `/schedule weekly monday 09:00 \"generate report\"`"
+                "**Explicit:**\n"
+                "• `daily 09:00 \"check HN\"`\n"
+                "• `once 14:30 \"remind me\"`\n"
+                "• `weekly monday 09:00 \"report\"`\n\n"
+                "**Natural language:**\n"
+                "• `every day at 9am \"check HN\"`\n"
+                "• `tomorrow at 3pm \"remind me\"`\n"
+                "• `every monday at 9am \"report\"`"
             )
             await update.message.reply_text(help_text)
             return
@@ -673,7 +678,8 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             frequency=schedule_data['frequency'],
             schedule_time=schedule_data['time'],
             task_description=schedule_data['task'],
-            day_of_week=schedule_data['day_of_week']
+            day_of_week=schedule_data.get('day_of_week'),
+            schedule_date=schedule_data.get('schedule_date'),
         )
         
         # Format confirmation message
@@ -698,35 +704,46 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """List all active schedules: /schedules."""
     if not update.message:
         return
-    
+
     uid = _user_id(update)
     if uid is None:
         await update.message.reply_text("⚠️ Cannot identify user.")
         return
-    
+
     try:
-        from core.scheduler import list_user_schedules, format_schedule_description
-        
+        import io
+        from rich.console import Console
+        from rich.table import Table
+        from core.scheduler import list_user_schedules
+
         schedules = list_user_schedules(str(uid))
-        
+
         if not schedules:
             await update.message.reply_text("📅 No active schedules.")
             return
-        
-        schedule_list = []
+
+        table = Table(title="📅 Your Schedules", show_header=True, header_style="bold")
+        table.add_column("ID", style="cyan", width=4)
+        table.add_column("When", style="green", width=22)
+        table.add_column("Task", style="white", max_width=35)
+        table.add_column("Last run", style="dim", width=12)
+
         for task in schedules:
-            description = format_schedule_description(task)
-            if task.last_run:
-                last_run_str = task.last_run.strftime("%Y-%m-%d %H:%M")
-                description += f" (last: {last_run_str})"
-            schedule_list.append(description)
-        
-        msg = f"📅 Your active schedules ({len(schedules)}):\n\n"
-        msg += "\n".join(schedule_list)
-        msg += "\n\nUse `/unschedule <id>` to remove a schedule."
-        
+            when = f"{task.schedule_time}"
+            if task.frequency == "daily":
+                when = f"Daily @ {task.schedule_time}"
+            elif task.frequency == "weekly":
+                when = f"{task.day_of_week.title()} @ {task.schedule_time}"
+            elif task.frequency == "once":
+                when = f"Once @ {task.schedule_time}"
+            last_run = task.last_run.strftime("%m/%d %H:%M") if task.last_run else "—"
+            table.add_row(str(task.id), when, task.task_description[:35], last_run)
+
+        buf = io.StringIO()
+        Console(file=buf, force_terminal=True, width=78).print(table)
+        msg = buf.getvalue() + "\nUse /unschedule <id> to remove."
         await update.message.reply_text(msg)
-        
+
     except Exception as e:
         logger.exception("Failed to list schedules")
         await update.message.reply_text(f"❌ Failed to list schedules: {str(e)[:200]}")

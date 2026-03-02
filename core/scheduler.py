@@ -5,8 +5,9 @@ Handles recurring and one-time scheduled tasks.
 
 import logging
 import re
-from datetime import datetime, time
-from typing import Optional, Dict, Any
+from datetime import datetime, time, timedelta
+from typing import Optional, Dict, Any, Tuple
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
@@ -30,26 +31,46 @@ logger = logging.getLogger(__name__)
 _scheduler: Optional[AsyncIOScheduler] = None
 
 
-def get_scheduler() -> AsyncIOScheduler:
-    """Get or create the global scheduler instance."""
+def get_system_timezone() -> str:
+    """Detect system timezone. Returns IANA name e.g. America/Sao_Paulo."""
+    try:
+        import time
+        tzname = time.tzname
+        if tzname and tzname[0]:
+            # Try common mappings for macOS
+            offset = -time.timezone // 3600
+            for name in ["America/Sao_Paulo", "America/New_York", "Europe/London", "Europe/Paris", "Asia/Tokyo", "UTC"]:
+                try:
+                    zi = ZoneInfo(name)
+                    now = datetime.now(zi)
+                    if abs((now.utcoffset() or timedelta(0)).total_seconds() / 3600 - offset) < 1:
+                        return name
+                except Exception:
+                    pass
+        return "UTC"
+    except Exception:
+        return "UTC"
+
+
+def get_scheduler(timezone: Optional[str] = None) -> AsyncIOScheduler:
+    """Get or create the global scheduler instance. Uses system timezone if not specified."""
     global _scheduler
     if _scheduler is None:
-        jobstores = {
-            'default': MemoryJobStore()
-        }
-        executors = {
-            'default': AsyncIOExecutor()
-        }
-        job_defaults = {
-            'coalesce': False,
-            'max_instances': 3
-        }
+        tz = timezone or get_system_timezone()
+        try:
+            tz_obj = ZoneInfo(tz)
+        except Exception:
+            tz_obj = ZoneInfo("UTC")
+        jobstores = {"default": MemoryJobStore()}
+        executors = {"default": AsyncIOExecutor()}
+        job_defaults = {"coalesce": False, "max_instances": 3}
         _scheduler = AsyncIOScheduler(
-            jobstores=jobstores, 
-            executors=executors, 
-            job_defaults=job_defaults
+            jobstores=jobstores,
+            executors=executors,
+            job_defaults=job_defaults,
+            timezone=tz_obj,
         )
-        logger.info("APScheduler created")
+        logger.info("APScheduler created (timezone=%s)", tz)
     return _scheduler
 
 
@@ -95,15 +116,22 @@ def _register_task_with_scheduler(task: ScheduledTask):
     
     # Create trigger based on frequency
     if task.frequency == "once":
-        # Parse time and create DateTrigger for today
         time_parts = task.schedule_time.split(":")
         hour, minute = int(time_parts[0]), int(time_parts[1])
-        
-        target_time = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
-        # If time has passed today, schedule for tomorrow
-        if target_time <= datetime.now():
-            target_time = target_time.replace(day=target_time.day + 1)
-            
+        tz = get_scheduler().timezone or ZoneInfo("UTC")
+        now = datetime.now(tz)
+        if getattr(task, "schedule_date", None):
+            from datetime import date
+            parts = task.schedule_date.split("-")
+            if len(parts) == 3:
+                target_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
+                target_time = datetime.combine(target_date, time(hour, minute), tzinfo=tz)
+            else:
+                target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        else:
+            target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target_time <= now:
+                target_time = target_time + timedelta(days=1)
         trigger = DateTrigger(run_date=target_time)
         
     elif task.frequency == "daily":
@@ -175,14 +203,42 @@ async def _execute_scheduled_task(task_id: int):
         logger.exception(f"Failed to execute scheduled task {task_id}: {e}")
 
 
+def _parse_natural_time(time_str: str) -> Optional[str]:
+    """Parse natural language time to HH:MM. E.g. '9am' -> '09:00', '3:30pm' -> '15:30'."""
+    time_str = time_str.strip().lower()
+    # 9am, 9 am, 9:30am, 3pm, 12pm, 12am
+    m = re.match(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$', time_str)
+    if not m:
+        return None
+    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+    if minute > 59:
+        return None
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    elif not ampm and hour > 12:  # 24h format
+        pass
+    elif not ampm and hour <= 12:
+        pass  # assume AM if no suffix
+    if hour > 23:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def parse_schedule_command(command_text: str) -> Optional[Dict[str, Any]]:
     """
     Parse /schedule command text into structured data.
     
-    Supported formats:
+    Supported formats (explicit):
     - /schedule daily 09:00 "check HN and summarize top 5 AI stories"
     - /schedule once 14:30 "remind me to review PR" 
     - /schedule weekly monday 09:00 "generate weekly report"
+    
+    Natural language:
+    - /schedule "every day at 9am" "check HN"
+    - /schedule "tomorrow at 3pm" "remind me to review PR"
+    - /schedule "every monday at 9am" "generate weekly report"
     
     Returns:
         Dict with frequency, time, day_of_week, task keys or None if invalid
@@ -190,33 +246,48 @@ def parse_schedule_command(command_text: str) -> Optional[Dict[str, Any]]:
     # Remove /schedule prefix and normalize whitespace
     text = command_text.replace("/schedule", "").strip()
     
-    # Try to match different patterns
+    # Natural language: "every day at 9am" "task" or "tomorrow at 3pm" "task"
+    nl_patterns = [
+        # "every day at 9am" "task" or "daily at 9am" "task"
+        (r'^(?:every\s+day|daily)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"([^"]+)"$', 'daily', None),
+        # "tomorrow at 3pm" "task" or "once tomorrow at 3pm" "task"
+        (r'^(?:once\s+)?tomorrow\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"([^"]+)"$', 'once_tomorrow', None),
+        # "every monday at 9am" "task"
+        (r'^every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"([^"]+)"$', 'weekly', 1),  # day=grp1, time=grp2, task=grp3
+    ]
+    for pattern, freq, day_grp in nl_patterns:
+        m = re.match(pattern, text, re.IGNORECASE)
+        if m:
+            if freq == 'daily':
+                t = _parse_natural_time(m.group(1))
+                if t:
+                    return {'frequency': 'daily', 'time': t, 'day_of_week': None, 'task': m.group(2)}
+            elif freq == 'once':
+                t = _parse_natural_time(m.group(1))
+                if t:
+                    return {'frequency': 'once', 'time': t, 'day_of_week': None, 'task': m.group(2)}
+            elif freq == 'once_tomorrow':
+                t = _parse_natural_time(m.group(1))
+                if t:
+                    from datetime import date
+                    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+                    return {'frequency': 'once', 'time': t, 'day_of_week': None, 'task': m.group(2), 'schedule_date': tomorrow}
+            elif freq == 'weekly' and day_grp is not None:
+                t = _parse_natural_time(m.group(2))
+                if t:
+                    return {'frequency': 'weekly', 'time': t, 'day_of_week': m.group(1).lower(), 'task': m.group(3)}
+    
+    # Explicit formats
     patterns = [
-        # daily/once: frequency time "task"
         r'^(daily|once)\s+(\d{1,2}:\d{2})\s+"([^"]+)"$',
-        # weekly: frequency day time "task"
         r'^weekly\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2}:\d{2})\s+"([^"]+)"$'
     ]
-    
-    # Try daily/once pattern first
     match = re.match(patterns[0], text, re.IGNORECASE)
     if match:
-        return {
-            'frequency': match.group(1).lower(),
-            'time': match.group(2),
-            'day_of_week': None,
-            'task': match.group(3)
-        }
-    
-    # Try weekly pattern
+        return {'frequency': match.group(1).lower(), 'time': match.group(2), 'day_of_week': None, 'task': match.group(3)}
     match = re.match(patterns[1], text, re.IGNORECASE)
     if match:
-        return {
-            'frequency': 'weekly',
-            'time': match.group(2),  # time is 2nd group for weekly pattern
-            'day_of_week': match.group(1).lower(),  # day is 1st group  
-            'task': match.group(3)  # task is 3rd group
-        }
+        return {'frequency': 'weekly', 'time': match.group(2), 'day_of_week': match.group(1).lower(), 'task': match.group(3)}
     
     return None
 
@@ -233,7 +304,14 @@ def validate_time_format(time_str: str) -> bool:
         return False
 
 
-def create_schedule(user_id: str, frequency: str, schedule_time: str, task_description: str, day_of_week: Optional[str] = None) -> ScheduledTask:
+def create_schedule(
+    user_id: str,
+    frequency: str,
+    schedule_time: str,
+    task_description: str,
+    day_of_week: Optional[str] = None,
+    schedule_date: Optional[str] = None,
+) -> ScheduledTask:
     """
     Create a new scheduled task and register it with APScheduler.
     
@@ -269,7 +347,8 @@ def create_schedule(user_id: str, frequency: str, schedule_time: str, task_descr
         task_description=task_description,
         frequency=frequency,
         schedule_time=schedule_time,
-        day_of_week=day_of_week
+        day_of_week=day_of_week,
+        schedule_date=schedule_date,
     )
     
     # Register with scheduler

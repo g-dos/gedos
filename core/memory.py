@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ class ScheduledTask(Base):
     task_description: Mapped[str] = mapped_column(Text, nullable=False)
     frequency: Mapped[str] = mapped_column(String(32), nullable=False)  # once, daily, weekly
     schedule_time: Mapped[str] = mapped_column(String(16), nullable=False)  # HH:MM format
+    schedule_date: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # YYYY-MM-DD for once (e.g. tomorrow)
     day_of_week: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # monday, tuesday, etc (for weekly)
     is_active: Mapped[bool] = mapped_column(default=True)
     job_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # APScheduler job ID
@@ -98,6 +99,13 @@ def init_db(engine=None):
     if engine is None:
         engine = get_engine()
     Base.metadata.create_all(engine)
+    # Migration: add schedule_date to scheduled_tasks if missing
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN schedule_date VARCHAR(16)"))
+            conn.commit()
+    except Exception:
+        pass  # Column may already exist
     logger.info("Memory DB initialized")
 
 
@@ -219,6 +227,20 @@ def add_context(type_name: str, data: dict[str, Any], session: Optional[Session]
             session.close()
 
 
+def get_user_timezone(user_id: str, session: Optional[Session] = None) -> Optional[str]:
+    """Get stored timezone for a user. Returns None if not set."""
+    entries = get_recent_context(type_name="user_timezone", limit=50, session=session)
+    for e in entries:
+        if e.data.get("user_id") == str(user_id):
+            return e.data.get("timezone")
+    return None
+
+
+def set_user_timezone(user_id: str, timezone: str, session: Optional[Session] = None) -> Context:
+    """Store timezone preference for a user."""
+    return add_context("user_timezone", {"user_id": str(user_id), "timezone": timezone}, session=session)
+
+
 def get_recent_context(type_name: Optional[str] = None, limit: int = 10, session: Optional[Session] = None) -> list[Context]:
     """Get recent context entries, optionally filtered by type."""
     own_session = session is None
@@ -243,6 +265,7 @@ def add_scheduled_task(
     frequency: str,
     schedule_time: str,
     day_of_week: Optional[str] = None,
+    schedule_date: Optional[str] = None,
     job_id: Optional[str] = None,
     session: Optional[Session] = None
 ) -> ScheduledTask:
@@ -257,6 +280,7 @@ def add_scheduled_task(
             frequency=frequency,
             schedule_time=schedule_time,
             day_of_week=day_of_week,
+            schedule_date=schedule_date,
             job_id=job_id
         )
         session.add(task)
