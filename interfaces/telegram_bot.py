@@ -39,6 +39,9 @@ _copilot_active: dict[int, bool] = {}
 _last_app_per_user: dict[int, str] = {}
 _last_copilot_message_per_user: dict[int, str] = {}
 
+# Error recovery state for multi-step tasks
+_pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
+
 # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX = 10  # max commands per minute
@@ -115,6 +118,68 @@ def _user_id(update: Update) -> Optional[int]:
     return None
 
 
+async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update) -> dict:
+    """
+    Execute a step with retry logic and user decision on failure.
+    """
+    import asyncio
+    from core.orchestrator import _execute_single_step
+    
+    # First attempt
+    await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step.action[:50]}...")
+    result = _execute_single_step(step.agent, step.action, step_obj=step)
+    
+    # If successful, return immediately
+    if result.get('success', False):
+        return result
+    
+    # First attempt failed, try once more
+    first_error = result.get('result', 'Unknown error')[:100]
+    await progress_msg.edit_text(f"⚠️ Step {step_num}/{steps_count} failed. Retrying...")
+    
+    # Retry attempt
+    retry_result = _execute_single_step(step.agent, step.action, step_obj=step)
+    
+    # If retry succeeded, return success
+    if retry_result.get('success', False):
+        return retry_result
+    
+    # Both attempts failed, ask user for decision
+    retry_error = retry_result.get('result', 'Unknown error')[:100]
+    decision_message = (
+        f"❌ Step {step_num} failed: {retry_error}\n\n"
+        f"Continue anyway? /yes /no"
+    )
+    
+    await progress_msg.edit_text(decision_message)
+    
+    # Set up user decision awaiting
+    decision_future = asyncio.Future()
+    
+    async def handle_decision(continue_task: bool):
+        if continue_task:
+            decision_future.set_result({"success": False, "result": retry_error, "agent_used": step.agent})
+        else:
+            decision_future.set_result({"success": False, "result": retry_error, "cancelled": True})
+    
+    # Store the decision callback
+    if uid is not None:
+        _pending_step_decision[uid] = {
+            "step_info": step,
+            "callback": handle_decision
+        }
+    
+    # Wait for user decision (with timeout)
+    try:
+        decision_result = await asyncio.wait_for(decision_future, timeout=300.0)  # 5 minute timeout
+        return decision_result
+    except asyncio.TimeoutError:
+        # Clean up pending decision and continue
+        if uid is not None and uid in _pending_step_decision:
+            del _pending_step_decision[uid]
+        return {"success": False, "result": "Decision timeout - continuing", "agent_used": step.agent}
+
+
 async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional[int], update: Update) -> dict:
     """
     Execute a multi-step task with real-time progress updates to Telegram.
@@ -154,9 +219,17 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
             await progress_msg.edit_text(f"🔄 Step {step_num}/{steps_count}: {step_desc}")
             
-            # Execute step
-            result = _execute_single_step(step.agent, step.action, step_obj=step)
+            # Execute step with retry logic
+            result = await _execute_step_with_recovery(
+                step, step_num, steps_count, progress_msg, uid, update
+            )
             agents_used.append(result.get('agent_used', step.agent))
+            
+            # Check if execution was cancelled by user decision
+            if result.get('cancelled', False):
+                _task_status = "idle"
+                await progress_msg.edit_text(f"⚠️ Task cancelled by user at step {step_num}/{steps_count}.")
+                return {"success": False, "result": "Task cancelled by user", "agent_used": "cancelled"}
             
             # Update progress after step
             if result.get('success', False):
@@ -165,12 +238,8 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                 results.append(f"Step {step_num}: ✅ {step_result}")
             else:
                 step_error = result.get('result', 'Unknown error')[:100]
-                await progress_msg.edit_text(f"❌ Step {step_num}/{steps_count} failed: {step_error}")
                 results.append(f"Step {step_num}: ❌ {step_error}")
                 overall_success = False
-                
-                # Continue with remaining steps on failure
-                logger.warning(f"Step {step_num} failed but continuing: {step_error}")
         
         # Final summary
         _task_status = "idle"
@@ -478,6 +547,30 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("pong")
 
 
+async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle user decision to continue after step failure."""
+    uid = _user_id(update)
+    if uid is None or uid not in _pending_step_decision:
+        await update.message.reply_text("No pending decision. Use this after a step fails.")
+        return
+    
+    # Get the pending decision and continue execution
+    decision_info = _pending_step_decision.pop(uid)
+    await decision_info["callback"](True)  # Continue with next step
+
+
+async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle user decision to cancel after step failure.""" 
+    uid = _user_id(update)
+    if uid is None or uid not in _pending_step_decision:
+        await update.message.reply_text("No pending decision. Use this after a step fails.")
+        return
+    
+    # Get the pending decision and cancel execution
+    decision_info = _pending_step_decision.pop(uid)
+    await decision_info["callback"](False)  # Cancel execution
+
+
 async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle Copilot Mode: /copilot on | /copilot off."""
     if not update.message or not update.message.text:
@@ -610,6 +703,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_handler(CommandHandler("yes", cmd_yes))
+    app.add_handler(CommandHandler("no", cmd_no))
     app.add_error_handler(_error_handler)
 
     copilot_cfg = config.get("copilot") or {}
