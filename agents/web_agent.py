@@ -240,5 +240,8 @@ async def _close_browser_async() -> None:
     _BROWSER = None
     _CONTEXT = None
     _PAGE = None
-    logger.info(\"Web agent: browser closed\")\n+
-\n+def close_browser() -> None:\n+    return _run_coro_sync(_close_browser_async())\n+
+    logger.info("Web agent: browser closed")
+
+
+def close_browser() -> None:
+    return _run_coro_sync(_close_browser_async())
