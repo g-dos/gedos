@@ -8,7 +8,7 @@ from typing import Optional
 from collections import defaultdict
 from time import time
 
-from telegram import Update
+from telegram import Update, ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -581,6 +581,21 @@ async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await decision_info["callback"](False)  # Cancel execution
 
 
+def _is_background_noise_only(text: str) -> bool:
+    """Check if transcription looks like background noise (inaudible, silence, etc.)."""
+    t = (text or "").strip().lower()
+    if len(t) < 3:
+        return True
+    noise_markers = ["[inaudible]", "[silence]", "[music]", "[noise]", "[applause]", "♪", "…"]
+    if any(m in t for m in noise_markers):
+        return True
+    # Very short with no real words
+    words = [w for w in t.split() if len(w) > 1]
+    if len(words) < 2 and len(t) < 15:
+        return True
+    return False
+
+
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe and execute as /task."""
     if not update.message or not update.message.voice:
@@ -591,13 +606,30 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("⚠️ Rate limit exceeded. Max 10 commands per minute.")
         return
 
+    voice = update.message.voice
+    # Reject empty or too long (>60s)
+    duration = getattr(voice, "duration", 0) or 0
+    if duration <= 0:
+        await update.message.reply_text("❌ Empty voice message. Please record again.")
+        return
+    if duration > 60:
+        await update.message.reply_text(
+            "❌ Voice message too long (max 60 seconds). Please send a shorter message."
+        )
+        return
+
+    # Show typing indicator while transcribing
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
     status_msg = await update.message.reply_text("🎙️ Transcribing...")
 
     try:
+        import os
         import tempfile
         from tools.voice import transcribe_audio
 
-        voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -606,7 +638,6 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             await file.download_to_drive(tmp_path)
             transcribed, error = transcribe_audio(tmp_path)
         finally:
-            import os
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
@@ -619,12 +650,24 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if not transcribed or not transcribed.strip():
             await status_msg.edit_text(
-                "❌ Could not understand the voice message.\n\n"
+                "❌ Could not understand the voice message (empty or unclear).\n\n"
                 "Please type your command instead: /task <description>"
             )
             return
 
+        if _is_background_noise_only(transcribed):
+            await status_msg.edit_text(
+                "❌ Voice message contained only background noise.\n\n"
+                "Please speak clearly or type your command: /task <description>"
+            )
+            return
+
         payload = transcribed.strip()
+
+        # Log transcription to memory layer
+        if uid is not None:
+            add_conversation(str(uid), f"[voice] {payload}", None)
+
         await status_msg.edit_text(f"🎙️ Heard: \"{payload}\" — executing...")
 
         # Treat as /task command
