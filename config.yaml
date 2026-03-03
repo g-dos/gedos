@@ -30,6 +30,12 @@ web:
   headless: true
   timeout: 30000
 
+github:
+  webhook_port: 9876
+  auto_fix: true
+  auto_pr: true
+  notify_on_failure: true
+
 agents:
   max_retries: 3
   terminal:
