@@ -37,6 +37,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="startup mode (overrides config.yaml)",
     )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="start Gedos as an MCP server over stdio",
+    )
     return parser
 
 
@@ -74,23 +79,26 @@ def main() -> int:
         console.print(f"[red bold]Error:[/] {e}")
         return 1
 
-    # Validate API keys before starting
-    from core.security import validate_api_keys
-    if not validate_api_keys(config):
-        console.print("[red bold]Error:[/] Missing required API keys. Check .env file.")
-        return 1
-
-    if args.mode:
-        config.setdefault("modes", {})["pilot"] = args.mode == "pilot"
-        config.setdefault("modes", {})["copilot"] = args.mode == "copilot"
-
-    modes = config.get("modes") or {}
-    if modes.get("copilot"):
-        active_mode = "copilot"
-    elif modes.get("pilot", True):
-        active_mode = "pilot"
+    if args.mcp:
+        active_mode = "mcp"
     else:
-        active_mode = "pilot"
+        # Validate API keys before starting the Telegram interface
+        from core.security import validate_api_keys
+        if not validate_api_keys(config):
+            console.print("[red bold]Error:[/] Missing required API keys. Check .env file.")
+            return 1
+
+        if args.mode:
+            config.setdefault("modes", {})["pilot"] = args.mode == "pilot"
+            config.setdefault("modes", {})["copilot"] = args.mode == "copilot"
+
+        modes = config.get("modes") or {}
+        if modes.get("copilot"):
+            active_mode = "copilot"
+        elif modes.get("pilot", True):
+            active_mode = "pilot"
+        else:
+            active_mode = "pilot"
 
     level_name = (config.get("logging") or {}).get("level", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -99,21 +107,27 @@ def main() -> int:
         level=level,
     )
 
-    _banner(active_mode, config)
+    if not args.mcp:
+        _banner(active_mode, config)
 
     from core.memory_profiler import log_memory_stats
     log_memory_stats("startup")
-
-    from interfaces.telegram_bot import run_polling
     logger = logging.getLogger(__name__)
     logger.info("Gedos v%s starting (%s mode)", __version__, active_mode)
 
     try:
-        run_polling()
+        if args.mcp:
+            from core.mcp_server import run_mcp_server
+            run_mcp_server()
+        else:
+            from interfaces.telegram_bot import run_polling
+            run_polling()
     except KeyboardInterrupt:
-        console.print("\n[yellow]Gedos stopped.[/]")
+        if not args.mcp:
+            console.print("\n[yellow]Gedos stopped.[/]")
     except Exception as e:
-        console.print(f"\n[red bold]Fatal error:[/] {e}")
+        if not args.mcp:
+            console.print(f"\n[red bold]Fatal error:[/] {e}")
         logger.exception("Fatal error")
         return 1
     return 0
