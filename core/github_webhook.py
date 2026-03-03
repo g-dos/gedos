@@ -85,7 +85,7 @@ def create_webhook_app() -> Flask:
         raw_body = request.get_data()
         signature = request.headers.get("X-Hub-Signature-256", "")
         if not _signature_is_valid(raw_body, signature):
-            return jsonify({"status": "invalid signature"}), 401
+            return jsonify({"status": "invalid signature"}), 403
 
         if request.headers.get("X-GitHub-Event") != "workflow_run":
             return jsonify({"status": "ignored"}), 200
