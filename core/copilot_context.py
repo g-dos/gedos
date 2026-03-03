@@ -23,6 +23,7 @@ class CopilotHint:
     kind: str  # "suggestion" | "warning"
     message: str
     app: Optional[str] = None
+    task_hint: Optional[str] = None  # Suggested /task payload for "Run" button
 
 
 def analyze_context(
@@ -73,12 +74,14 @@ def analyze_context(
                 kind="warning",
                 message=t("copilot_hint_terminal_error", lang),
                 app=app_name,
+                task_hint="fix the error shown in terminal",
             ))
         else:
             hints.append(CopilotHint(
                 kind="warning",
                 message=t("copilot_hint_warning_generic", lang),
                 app=app_name,
+                task_hint="investigate the error on screen",
             ))
 
     if suggestions_enabled and app_name:
@@ -86,16 +89,16 @@ def analyze_context(
         window_text = " ".join(title.lower() for title in all_window_titles)
 
         if "vscode" in app_lower or "visual studio code" in app_lower:
-            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_vscode", lang), app=app_name))
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_vscode", lang), app=app_name, task_hint="run tests and check git status"))
         elif "terminal" in app_lower or "iterm" in app_lower:
-            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_terminal", lang), app=app_name))
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_terminal", lang), app=app_name, task_hint="run a command"))
         elif any(browser in app_lower for browser in ("safari", "chrome", "firefox", "edge")):
             if "pull request" in window_text or " /pull/" in window_text or " pr #" in window_text:
-                hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_github_pr", lang), app=app_name))
+                hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_github_pr", lang), app=app_name, task_hint="summarize this PR"))
             else:
                 hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_browser", lang), app=app_name))
         elif "finder" in app_lower:
-            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_finder", lang), app=app_name))
+            hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_finder", lang), app=app_name, task_hint="list files in current directory"))
         else:
             hints.append(CopilotHint(kind="suggestion", message=t("copilot_hint_generic", lang, app=app_name), app=app_name))
 
@@ -104,6 +107,7 @@ def analyze_context(
             kind="suggestion",
             message=t("copilot_hint_idle", lang),
             app=app_name or None,
+            task_hint="check if there is anything to do",
         ))
 
     return hints
