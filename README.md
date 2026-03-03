@@ -47,6 +47,42 @@ Send `/start` to your bot on Telegram to begin.
 
 **Full setup guide**: [docs/setup-ollama.md](docs/setup-ollama.md)
 
+## MCP Mode
+
+Run Gedos as an MCP server and let MCP-compatible clients use your Mac as a tool:
+
+```bash
+python gedos.py --mcp
+```
+
+**Claude Desktop**:
+
+```json
+{
+  "mcpServers": {
+    "gedos": {
+      "command": "python",
+      "args": ["/path/to/gedos/gedos.py", "--mcp"]
+    }
+  }
+}
+```
+
+**Cursor**:
+
+```json
+{
+  "mcpServers": {
+    "gedos": {
+      "command": "python",
+      "args": ["/path/to/gedos/gedos.py", "--mcp"]
+    }
+  }
+}
+```
+
+See [docs/mcp.md](docs/mcp.md) for the full integration guide and tool reference.
+
 ---
 
 ## Commands
