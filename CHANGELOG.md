@@ -2,6 +2,22 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.6] — 2026-03
+
+### Added
+- **GitHub webhook receiver**: added `core/github_webhook.py` to accept signed `workflow_run` failure events from GitHub
+- **CI self-healing**: added `core/ci_healer.py` to fetch failure logs, analyze errors, ask the LLM for a fix, and validate the result locally
+- **Auto PR flow**: when the local verification passes, Gedos can commit the fix, push a branch, and open a pull request automatically
+- **Webhook test coverage**: added unit tests for signature validation, event filtering, and CI healer dispatch
+- **CI healer test coverage**: added unit tests for log parsing, fix application, PR creation decisions, and user notifications
+
+### Enhanced
+- **CLI startup**: added `--webhook` so Gedos can run the GitHub webhook server alongside the Telegram bot
+- **Telegram integration**: added `/github status` and `/github connect` plus CI success/failure notifications sent through Telegram
+
+### Validation
+- **Test suite**: expanded the passing suite from 71 to 80 tests, including the new webhook and CI healer coverage
+
 ## [0.9.5] — 2026-03
 
 ### Added
