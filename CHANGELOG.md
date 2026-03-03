@@ -2,6 +2,22 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.5] — 2026-03
+
+### Added
+- **MCP server**: introduced `core/mcp_server.py` so Gedos can run as a Model Context Protocol server over stdio
+- **MCP tool surface**: exposed 6 tools for terminal execution, application launching, web browsing, screen reading, LLM queries, and task history access
+- **MCP test coverage**: added mock-based unit coverage for MCP server initialization and all 6 MCP tools in `tests/test_mcp_server.py`
+
+### Enhanced
+- **CLI startup**: added `--mcp` to `gedos.py` so Gedos can run in Telegram mode or MCP mode from the same entrypoint
+- **Integration docs**: documented Claude Desktop and Cursor setup in `docs/mcp.md` and linked the quick-start snippets from `README.md`
+- **Telegram discoverability**: `/ping` and `/help` now mention MCP availability and how to connect
+
+### Validation
+- **Runtime check**: verified `python gedos.py --mcp` starts cleanly without startup errors
+- **Test suite**: expanded the passing suite from 64 to 71 tests, including the new MCP coverage
+
 ## [0.9.4] — 2026-03
 
 ### Fixed
