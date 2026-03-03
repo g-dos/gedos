@@ -14,6 +14,7 @@ _T: dict[str, dict[str, str]] = {
     "usage_task": {"en": "Usage: /task <task description>", "pt": "Uso: /task <descrição da tarefa>", "es": "Uso: /task <descripción de la tarea>"},
     "usage_ask": {"en": "Usage: /ask <question>", "pt": "Uso: /ask <pergunta>", "es": "Uso: /ask <pregunta>"},
     "usage_web": {"en": "Usage: /web <url>", "pt": "Uso: /web <url>", "es": "Uso: /web <url>"},
+    "usage_github": {"en": "Usage: /github status|connect", "pt": "Uso: /github status|connect", "es": "Uso: /github status|connect"},
     "planning": {"en": "⚙️ Planning task...", "pt": "⚙️ Planejando tarefa...", "es": "⚙️ Planificando tarea..."},
     "planning_complete": {"en": "⚙️ Planning complete! {n} steps identified. Starting execution...", "pt": "⚙️ Planejamento concluído! {n} passos identificados. Iniciando...", "es": "⚙️ Planificación completa. {n} pasos identificados. Iniciando..."},
     "step_in_progress": {"en": "🔄 Step {n}/{t}: {step}", "pt": "🔄 Passo {n}/{t}: {step}", "es": "🔄 Paso {n}/{t}: {step}"},
@@ -122,6 +123,11 @@ _T: dict[str, dict[str, str]] = {
     "memory_item_truncated": {"en": "- [{status}] {description}...", "pt": "- [{status}] {description}...", "es": "- [{status}] {description}..."},
     "web_page_loaded": {"en": "Page loaded: {title}\n{url}", "pt": "Página carregada: {title}\n{url}", "es": "Página cargada: {title}\n{url}"},
     "web_error": {"en": "Error: {err}", "pt": "Erro: {err}", "es": "Error: {err}"},
+    "github_status_running": {"en": "GitHub webhook: running on port {port}", "pt": "Webhook do GitHub: em execução na porta {port}", "es": "Webhook de GitHub: ejecutándose en el puerto {port}"},
+    "github_status_stopped": {"en": "GitHub webhook: stopped (configured port {port})", "pt": "Webhook do GitHub: parado (porta configurada {port})", "es": "Webhook de GitHub: detenido (puerto configurado {port})"},
+    "github_connect": {"en": "Connect your repo in GitHub:\n1. Settings -> Webhooks -> Add webhook\n2. Payload URL: http://your-mac-ip:{port}/webhook\n3. Content type: application/json\n4. Events: Workflow runs\n5. Set the same GITHUB_WEBHOOK_SECRET locally\n6. If needed, expose port {port} with ngrok\n\nFull guide: docs/github-webhook.md", "pt": "Conecte seu repositório no GitHub:\n1. Settings -> Webhooks -> Add webhook\n2. Payload URL: http://your-mac-ip:{port}/webhook\n3. Content type: application/json\n4. Events: Workflow runs\n5. Defina o mesmo GITHUB_WEBHOOK_SECRET localmente\n6. Se precisar, exponha a porta {port} com ngrok\n\nGuia completo: docs/github-webhook.md", "es": "Conecte su repositorio en GitHub:\n1. Settings -> Webhooks -> Add webhook\n2. Payload URL: http://your-mac-ip:{port}/webhook\n3. Content type: application/json\n4. Events: Workflow runs\n5. Configure el mismo GITHUB_WEBHOOK_SECRET localmente\n6. Si hace falta, exponga el puerto {port} con ngrok\n\nGuía completa: docs/github-webhook.md"},
+    "github_ci_fix_success": {"en": "🔧 CI failure detected on {repo}/{branch}\nError: {error_summary}\nFix applied: {what_was_changed}\nTests: ✅ passing\nPR #{pr_number} opened: {pr_url}", "pt": "🔧 Falha de CI detectada em {repo}/{branch}\nErro: {error_summary}\nCorreção aplicada: {what_was_changed}\nTestes: ✅ passando\nPR #{pr_number} aberta: {pr_url}", "es": "🔧 Fallo de CI detectado en {repo}/{branch}\nError: {error_summary}\nCorrección aplicada: {what_was_changed}\nPruebas: ✅ pasando\nPR #{pr_number} abierta: {pr_url}"},
+    "github_ci_fix_failure": {"en": "❌ CI failure on {repo}/{branch}\nError: {error_summary}\nCould not auto-fix. Review needed.", "pt": "❌ Falha de CI em {repo}/{branch}\nErro: {error_summary}\nNão foi possível corrigir automaticamente. Revisão necessária.", "es": "❌ Fallo de CI en {repo}/{branch}\nError: {error_summary}\nNo se pudo corregir automáticamente. Se necesita revisión."},
 }
 
 

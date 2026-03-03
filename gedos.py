@@ -9,6 +9,7 @@ __version__ = "0.9.5"
 import argparse
 import logging
 import sys
+import threading
 
 from rich.console import Console
 from rich.panel import Panel
@@ -41,6 +42,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mcp",
         action="store_true",
         help="start Gedos as an MCP server over stdio",
+    )
+    parser.add_argument(
+        "--webhook",
+        action="store_true",
+        help="start the GitHub webhook server alongside the Telegram bot",
     )
     return parser
 
@@ -120,6 +126,17 @@ def main() -> int:
             from core.mcp_server import run_mcp_server
             run_mcp_server()
         else:
+            if args.webhook:
+                from core.github_webhook import get_webhook_status, run_github_webhook_server
+
+                threading.Thread(
+                    target=run_github_webhook_server,
+                    name="gedos-github-webhook",
+                    daemon=True,
+                )
+                webhook_thread.start()
+                webhook_status = get_webhook_status()
+                logger.info("GitHub webhook listening on port %s", webhook_status["port"])
             from interfaces.telegram_bot import run_polling
             run_polling()
     except KeyboardInterrupt:

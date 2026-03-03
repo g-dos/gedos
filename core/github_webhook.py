@@ -9,6 +9,7 @@ import hmac
 import logging
 import os
 import threading
+from typing import Any
 
 from flask import Flask, jsonify, request
 
@@ -16,6 +17,7 @@ from core.ci_healer import CIFailureContext, handle_ci_failure
 from core.config import load_config
 
 logger = logging.getLogger(__name__)
+_WEBHOOK_STATE: dict[str, Any] = {"running": False, "port": 9876}
 
 
 def _webhook_port() -> int:
@@ -27,6 +29,18 @@ def _webhook_port() -> int:
             logger.warning("Ignoring invalid GITHUB_WEBHOOK_PORT: %s", env_port)
     config = load_config()
     return int((config.get("github") or {}).get("webhook_port", 9876))
+
+
+def get_webhook_status() -> dict[str, Any]:
+    """Return the current webhook server status."""
+    port = _WEBHOOK_STATE.get("port") or _webhook_port()
+    return {"running": bool(_WEBHOOK_STATE.get("running")), "port": int(port)}
+
+
+def _set_webhook_status(running: bool, port: int) -> None:
+    """Persist the in-process webhook status."""
+    _WEBHOOK_STATE["running"] = running
+    _WEBHOOK_STATE["port"] = port
 
 
 def _webhook_secret() -> str:
@@ -97,5 +111,9 @@ def run_github_webhook_server() -> None:
     """Run the GitHub webhook server."""
     app = create_webhook_app()
     port = _webhook_port()
+    _set_webhook_status(True, port)
     logger.info("Starting GitHub webhook server on port %s", port)
-    app.run(host="0.0.0.0", port=port)
+    try:
+        app.run(host="0.0.0.0", port=port)
+    finally:
+        _set_webhook_status(False, port)

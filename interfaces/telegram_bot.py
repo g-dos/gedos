@@ -514,6 +514,31 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(t("pong", lang))
 
 
+async def cmd_github(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show GitHub webhook status or connection instructions."""
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+    lang = _user_lang(update, text)
+    parts = text.split(maxsplit=1)
+    action = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    from core.github_webhook import get_webhook_status
+
+    status = get_webhook_status()
+    if action == "status":
+        key = "github_status_running" if status["running"] else "github_status_stopped"
+        await update.message.reply_text(t(key, lang, port=status["port"]))
+        return
+
+    if action == "connect":
+        await update.message.reply_text(t("github_connect", lang, port=status["port"]))
+        return
+
+    await update.message.reply_text(t("usage_github", lang))
+
+
 async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user decision to continue after step failure."""
     uid = _user_id(update)
@@ -997,6 +1022,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("yes", cmd_yes))
     app.add_handler(CommandHandler("no", cmd_no))
     app.add_handler(CommandHandler("schedule", cmd_schedule))

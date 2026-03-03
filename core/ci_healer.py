@@ -22,7 +22,8 @@ from github import Github
 from agents.terminal_agent import run_shell
 from core.config import load_config
 from core.llm import complete
-from core.memory import Conversation, get_session, init_db as memory_init_db
+from core.memory import Conversation, get_session, get_user_language, init_db as memory_init_db
+from interfaces.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,7 @@ def _run_validation_tests(repo_dir: Path) -> bool:
     return False
 
 
-def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedFailure) -> str:
+def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedFailure) -> tuple[int, str]:
     """Commit the fix, push a branch, and open a pull request."""
     branch_name = f"codex/ci-heal-{context.commit_sha[:7]}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
     git_name = run_shell('git config user.name "Gedos CI Healer"', cwd=str(repo_dir))
@@ -302,7 +303,7 @@ def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedF
         head=branch_name,
         base=context.branch,
     )
-    return pr.html_url
+    return pr.number, pr.html_url
 
 
 def _latest_telegram_chat_id() -> Optional[str]:
@@ -313,6 +314,13 @@ def _latest_telegram_chat_id() -> Optional[str]:
         if convo:
             return convo.user_id
     return None
+
+
+def _latest_telegram_language(chat_id: Optional[str]) -> str:
+    """Best-effort lookup of the latest Telegram user's preferred language."""
+    if not chat_id:
+        return "en"
+    return get_user_language(chat_id) or "en"
 
 
 def _notify_user(message: str) -> None:
@@ -340,6 +348,8 @@ def handle_ci_failure(context: CIFailureContext) -> None:
         return
 
     try:
+        chat_id = _latest_telegram_chat_id()
+        lang = _latest_telegram_language(chat_id)
         logs = _fetch_failure_logs(context)
         failure = _parse_failure_details(logs)
         if not failure:
@@ -362,18 +372,32 @@ def handle_ci_failure(context: CIFailureContext) -> None:
             raise RuntimeError("CI failed, couldn't auto-fix")
 
         pr_url = ""
+        pr_number: Optional[int] = None
         if github_cfg["auto_pr"]:
-            pr_url = _create_pr(repo, repo_dir, context, failure)
+            pr_number, pr_url = _create_pr(repo, repo_dir, context, failure)
 
-        message = (
-            f"CI auto-fix succeeded for {context.repo_full_name}\n"
-            f"Workflow: {context.workflow_name}\n"
-            f"Error: {failure.error_type}"
+        message = t(
+            "github_ci_fix_success",
+            lang,
+            repo=context.repo_full_name,
+            branch=context.branch,
+            error_summary=failure.error_type,
+            what_was_changed=target_file.relative_to(repo_dir).as_posix(),
+            pr_number=pr_number or "?",
+            pr_url=pr_url or "",
         )
-        if pr_url:
-            message += f"\nPR: {pr_url}"
         _notify_user(message)
     except Exception as exc:
         logger.exception("CI healer failed")
         if github_cfg["notify_on_failure"]:
-            _notify_user(f"CI failed, couldn't auto-fix\n{context.repo_full_name}\n{exc}")
+            chat_id = _latest_telegram_chat_id()
+            lang = _latest_telegram_language(chat_id)
+            _notify_user(
+                t(
+                    "github_ci_fix_failure",
+                    lang,
+                    repo=context.repo_full_name,
+                    branch=context.branch,
+                    error_summary=str(exc),
+                )
+            )
