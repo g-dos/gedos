@@ -36,7 +36,7 @@ apscheduler>=3.10.0
 langdetect>=1.0.9
 
 # v0.9.5: MCP server (requires Python 3.10+)
-mcp>=1.0.0; python_version >= "3.10"
+mcp>=1.0.0
 
 # Optional: for voice input via Telegram voice messages
 # pip install openai-whisper
