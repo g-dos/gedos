@@ -15,7 +15,8 @@ DEFAULT_ALLOWED_EXECUTABLES = {
     "touch", "cp", "mv", "cd", "pwd", "find", "grep", "curl", "brew", "npm", "node",
     "open", "which", "env", "export", "source", "playwright", "ollama",
 }
-BLOCKED_OPERATORS = {";", "&&", "||", "|", ">", ">>", "<", "`", "$", "(", ")", "{", "}", "\n"}
+BLOCKED_SUBSTRINGS = {";", "&&", "||", "|", ">>", "`", "$", "(", ")", "{", "}", "\n", "#"}
+BLOCKED_TOKEN_OPERATORS = {">", ">>", "<"}
 BLOCKED_TERMS = {
     "rm", "sudo", "su", "chmod", "chown", "eval", "exec", "dd", "mkfs",
     "kill", "killall", "shutdown", "reboot",
@@ -35,6 +36,15 @@ DESTRUCTIVE_PATTERNS = [
     r"\bchmod\b",
     r"\bchown\b",
 ]
+_SAFE_PIP_SPEC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-\[\]=<>]*$")
+_DANGEROUS_GIT_FLAGS = {
+    "--exec-path",
+    "--upload-pack",
+    "--receive-pack",
+    "--no-replace-objects",
+    "--super-prefix",
+    "--bare",
+}
 
 
 class SecurityError(RuntimeError):
@@ -64,6 +74,11 @@ def sanitize_command(command: str) -> tuple[bool, str]:
     if not command or not command.strip():
         return False, "Empty command."
 
+    if "\x00" in command:
+        return False, "null byte detected"
+    if any(ord(char) < 32 and char not in ("\t",) for char in command):
+        return False, "non-printable characters detected"
+
     cmd = command.strip()
 
     low = cmd.lower()
@@ -73,7 +88,7 @@ def sanitize_command(command: str) -> tuple[bool, str]:
             logger.warning("%s in command: %s", reason, cmd[:80])
             return False, reason
 
-    for operator in BLOCKED_OPERATORS:
+    for operator in BLOCKED_SUBSTRINGS:
         if operator in cmd:
             reason = f"Blocked dangerous token: {operator}"
             logger.warning("%s in command: %s", reason, cmd[:80])
@@ -96,11 +111,57 @@ def sanitize_command(command: str) -> tuple[bool, str]:
         return False, reason
 
     for token in parts:
+        if token in BLOCKED_TOKEN_OPERATORS:
+            reason = f"Blocked dangerous token: {token}"
+            logger.warning("%s in command: %s", reason, cmd[:80])
+            return False, reason
         if token.lower() in BLOCKED_TERMS:
             reason = f"Blocked dangerous token: {token}"
             logger.warning("%s in command: %s", reason, cmd[:80])
             return False, reason
 
+    if executable == "pip":
+        return _validate_pip_command(parts, cmd)
+    if executable == "git":
+        return _validate_git_command(parts, cmd)
+
+    return True, "ok"
+
+
+def _validate_pip_command(parts: list[str], cmd: str) -> tuple[bool, str]:
+    """Allow only `pip install <safe package spec>` with no local paths."""
+    if len(parts) != 3 or parts[1] != "install":
+        reason = "Only `pip install <package>` is allowed"
+        logger.warning("%s: %s", reason, cmd[:80])
+        return False, reason
+
+    package_spec = parts[2]
+    blocked_prefixes = ("../", "./", "/", "~", "file:")
+    if package_spec.startswith(blocked_prefixes):
+        reason = f"Blocked local pip path: {package_spec}"
+        logger.warning("%s", reason)
+        return False, reason
+    if not _SAFE_PIP_SPEC_RE.fullmatch(package_spec):
+        reason = f"Blocked pip package spec: {package_spec}"
+        logger.warning("%s", reason)
+        return False, reason
+    return True, "ok"
+
+
+def _validate_git_command(parts: list[str], cmd: str) -> tuple[bool, str]:
+    """Block dangerous git flags and path-valued long options."""
+    for token in parts[1:]:
+        for flag in _DANGEROUS_GIT_FLAGS:
+            if token == flag or token.startswith(flag + "="):
+                reason = f"Blocked dangerous git flag: {flag}"
+                logger.warning("%s in command: %s", reason, cmd[:80])
+                return False, reason
+        if token.startswith("--") and "=" in token:
+            _, value = token.split("=", 1)
+            if value.startswith(("/", "~", ".", "../")):
+                reason = f"Blocked git path-valued option: {token}"
+                logger.warning("%s", reason)
+                return False, reason
     return True, "ok"
 
 
