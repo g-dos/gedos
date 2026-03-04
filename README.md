@@ -1,19 +1,26 @@
 # >gedos
 
+```text
+__                   __          
+\ \  ____ ____  ____/ /___  _____
+ \ \/ __ `/ _ \/ __  / __ \/ ___/
+ / / /_/ /  __/ /_/ / /_/ (__  ) 
+/_/\__, /\___/\__,_/\____/____/  
+  /____/
+```
+
 **Your Mac. Working while you're not.**
 
-Gedos is an open-source autonomous AI agent that runs natively on macOS. It reads the screen via the macOS Accessibility Tree, controls mouse and keyboard, executes terminal commands, browses the web, and communicates with you via Telegram.
+Gedos is an open-source autonomous AI agent that lives on your Mac.
+It reads your screen, controls mouse and keyboard, executes commands,
+browses the web, learns your workflows, fixes your bugs while you sleep,
+and gives any AI hands to control your computer.
 
+Local. Private. Open source.
+
+[![Version](https://img.shields.io/badge/version-v0.9.11-blue)](https://github.com/g-dos/gedos/releases/tag/v0.9.11)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![Ollama](https://img.shields.io/badge/LLM-Ollama-green.svg)](https://ollama.com)
-
----
-
-## Demo
-
-> **Note**: Real demo GIF will be recorded and added before v1.0 launch.  
-> See [docs/demo-placeholder.md](docs/demo-placeholder.md) for instructions.
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 
 ---
 
@@ -30,23 +37,77 @@ gedos
 **Manual:**
 
 ```bash
-git clone https://github.com/g-dos/gedos.git
-cd gedos
-pip install -r requirements.txt
+git clone https://github.com/g-dos/gedos
+cd gedos && pip install -r requirements.txt
 python gedos.py
 ```
 
-**Full setup guide**: [docs/setup-ollama.md](docs/setup-ollama.md) and [docs/homebrew.md](docs/homebrew.md)
+---
 
-## MCP Mode
+## What Gedos can do
 
-Run Gedos as an MCP server and let MCP-compatible clients use your Mac as a tool:
+### 🤖 Pilot Mode
+Send a task from anywhere. Gedos executes on your Mac and reports back.
+
+```text
+You: /task run pytest and tell me if the branch is safe to merge
+Gedos:
+⚙️ Running step 1/2...
+✅ Step 1/2: pytest — 193 passed
+⚙️ Running step 2/2...
+✅ Step 2/2: git status — clean
+✓ Done in 5.1s
+```
+
+### 👥 Copilot Mode
+Monitors your screen in real-time and suggests actions as you work.
+
+```text
+[You open VS Code on a failing test]
+Gedos: 💡 I see an error. Want me to fix it?
+You: yes
+Gedos: Running tests, checking traceback, and preparing a fix.
+```
+
+### 🔧 Self-healing CI
+CI broke at 3am? Gedos reads the error, fixes the code,
+runs tests, and opens a PR. You wake up to a green build.
+
+```text
+🔧 CI failure detected on g-dos/gedos/main
+Error: tests/test_scheduler.py failed on assertion
+Fix applied: updated scheduler parser and test coverage
+Tests: ✅ passing
+PR #42 opened: https://github.com/g-dos/gedos/pull/42
+```
+
+### 🧠 Contextual Memory
+Learns your workflows over time and acts proactively.
+
+```text
+💡 I noticed a pattern:
+After git commit -> you usually push.
+Want me to automate this?
+```
+
+### 🎙️ Voice
+Send a voice message. Gedos transcribes, executes, responds by voice.
+
+```text
+You: [voice] "run tests and tell me if they passed"
+Gedos: 🎙️ Heard: run tests and tell me if they passed. Executing...
+[returns spoken summary]
+```
+
+### 🔌 MCP Server
+Exposes your Mac as an MCP server. Claude, Cursor, GPT —
+any LLM can use your Mac as a tool.
 
 ```bash
-python gedos.py --mcp
+gedos --mcp
 ```
 
-**Claude Desktop**:
+**Claude Desktop**
 
 ```json
 {
@@ -59,7 +120,7 @@ python gedos.py --mcp
 }
 ```
 
-**Cursor**:
+**Cursor**
 
 ```json
 {
@@ -72,218 +133,197 @@ python gedos.py --mcp
 }
 ```
 
-See [docs/mcp.md](docs/mcp.md) for the full integration guide and tool reference.
+### ⏰ Scheduled Tasks
+Natural language scheduling.
+
+```text
+/schedule every weekday at 9am "check HN and brief me"
+/schedule every friday at 5pm "run tests and deploy if green"
+/schedule in 30 minutes "remind me to review the PR"
+```
 
 ---
 
 ## Commands
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/start` | Welcome message and setup guide | `/start` |
-| `/help` | List all commands (context-aware) | `/help` |
-| `/task <description>` | Execute any task autonomously | `/task git status` |
-| `/status` | Check current task status | `/status` |
-| `/stop` | Stop running task | `/stop` |
-| `/copilot on\|off` | Enable/disable Copilot Mode | `/copilot on` |
-| `/memory` | View recent task history | `/memory` |
-| `/web <url>` | Browse the web | `/web google.com` |
-| `/ask <question>` | Ask the LLM (local by default) | `/ask what is Python?` |
-| `/ping` | Health check | `/ping` |
-
-**More examples**: [docs/examples.md](docs/examples.md)
+| Command | What it does |
+| --- | --- |
+| `/start` | Start Gedos, pairing, and onboarding in Telegram Mode |
+| `/help` | Show the full command reference |
+| `/task <description>` | Run any task through the orchestrator |
+| `/status` | Show the current task status |
+| `/stop` | Cancel the current task |
+| `/web <url>` | Browse and summarize a URL |
+| `/ask <question>` | Ask the configured LLM directly |
+| `/memory` | Show recent task history |
+| `/patterns` | Show learned behavioral patterns |
+| `/forget <id>` | Remove one learned pattern |
+| `/forget all` | Clear all learned patterns for the current user |
+| `/copilot on` | Turn Copilot Mode on |
+| `/copilot off` | Turn Copilot Mode off |
+| `/copilot status` | Show Copilot state, sensitivity, and last suggestion |
+| `/copilot sensitivity high\|medium\|low` | Change proactive suggestion frequency |
+| `/voice on\|off\|status` | Toggle voice responses |
+| `/permissions` | Show current permission level |
+| `/permissions default` | Switch to Default permission mode |
+| `/permissions full` | Request Full Access mode |
+| `/config` | Open or locate `GEDOS.md` |
+| `/ping` | Health check plus MCP availability |
+| `/clear` | Clear the CLI screen |
+| `/exit` | Quit CLI Mode cleanly |
+| `/github status` | Show GitHub webhook server status |
+| `/github connect` | Show GitHub webhook setup instructions |
+| `/schedule <when> <task>` | Create a schedule from natural language |
+| `/schedule history` | Show the last 5 scheduled task runs |
+| `/schedules` | List active schedules with next run times |
+| `/unschedule <id>` | Remove a schedule |
+| `/owner status` | Show owner and allowed chat IDs |
+| `/owner allow <chat_id>` | Allow another Telegram chat |
+| `/owner revoke <chat_id>` | Revoke an allowed chat |
+| `/yes` | Approve a pending plan, retry, or destructive action |
+| `/no` | Deny a pending plan, retry, or suggestion |
+| `/never` | Suppress a learned pattern suggestion permanently |
 
 ---
 
 ## Architecture
 
+```text
+           User (CLI / Telegram / MCP / Webhook)
+                         |
+      +------------------+------------------+
+      |                  |                  |
+   CLI Mode         Telegram Bot        MCP Server
+      |                  |                  |
+      +------------------+------------------+
+                         |
+                 Orchestrator (LangGraph)
+                         |
+     +-----------+-------+--------+------------+
+     |           |                |            |
+ Terminal     GUI Agent        Web Agent      LLM
+  Agent       (AX Tree)       (Playwright)   Layer
+     |                                         |
+     +-------------------+---------------------+
+                         |
+                 Memory Layer (SQLite)
+                         |
+      +-------------+----+-----+---------------+
+      |             |          |               |
+ Behavior Tracker  Scheduler  CI Healer   Security Layer
+      |             |          |               |
+      +-------------+----------+---------------+
+                         |
+                Proactive Suggestions / History
 ```
-┌─────────────────────────────────┐
-│    Telegram Interface (User)    │
-└───────────────┬─────────────────┘
-                │
-        ┌───────▼────────┐
-        │  Orchestrator  │
-        │   (LangGraph)  │
-        └───────┬────────┘
-                │
-    ┌───────────┼───────────┬────────────┐
-    │           │           │            │
-┌───▼────┐ ┌───▼────┐ ┌───▼────┐ ┌────▼─────┐
-│Terminal│ │  GUI   │ │  Web   │ │   LLM    │
-│ Agent  │ │ Agent  │ │ Agent  │ │  Agent   │
-│ (shell)│ │(AX Tree│ │(Browser│ │ (Ollama/ │
-│        │ │+mouse) │ │        │ │ Claude)  │
-└────────┘ └────────┘ └────────┘ └──────────┘
-                │
-        ┌───────▼────────┐
-        │ Memory Layer   │
-        │    (SQLite)    │
-        └────────────────┘
-```
-
-### Components
-
-- **Orchestrator**: Central brain using LangGraph. Routes tasks to the appropriate agent.
-- **Terminal Agent**: Executes shell commands (`git`, `npm`, `python`, any CLI tool).
-- **GUI Agent**: Reads screen via AX Tree and controls mouse/keyboard via macOS Accessibility APIs.
-- **Web Agent**: Browses the web using Playwright.
-- **LLM Agent**: Answers questions using Ollama (local, default) or Claude/OpenAI (cloud, optional).
-- **Memory Layer**: Persists task history and context using SQLite + SQLAlchemy.
 
 ---
 
 ## Modes
 
-Gedos operates in two distinct modes:
+CLI Mode — zero config, runs immediately, no Telegram needed
 
-### 🤖 Pilot Mode (Default)
-Fully autonomous. Send a task, leave, Gedos executes and reports back when done.
+Telegram Mode — auto-activates when `TELEGRAM_BOT_TOKEN` is in `.env`
 
-**Example**:
-```
-You: /task git status
-Gedos: On branch main. Your branch is up to date. Nothing to commit.
-```
+MCP Mode — `gedos --mcp`
 
-**Use cases**:
-- Run terminal commands remotely
-- Execute tasks while away from your Mac
-- Automate repetitive workflows
-
----
-
-### 👥 Copilot Mode
-Proactive real-time assistant. Gedos monitors your screen and suggests actions as you work.
-
-**Example**:
-```
-[You open VS Code]
-Gedos: 💡 Want me to commit, run tests, or search for something?
-You: run tests
-Gedos: Running: pytest
-      === 22 passed in 1.84s ===
-      ✓ All tests passing.
-```
-
-**Enable Copilot Mode**:
-```
-/copilot on
-```
-
-**How it works**:
-- Checks active app every 10 seconds (configurable)
-- Detects context (Terminal, VS Code, Safari, etc.)
-- Proactively suggests next steps
-- Warns when errors appear on screen
-
-**Disable**:
-```
-/copilot off
-```
+Webhook Mode — `gedos --webhook`
 
 ---
 
 ## LLM Configuration
 
-Gedos uses **Ollama** by default — fully local, no API key required, no data sent to the cloud.
-
-### Using Ollama (Default)
+Gedos uses Ollama by default.
 
 ```bash
-# Install
 brew install ollama
-
-# Start server
 ollama serve
-
-# Pull recommended model
-ollama pull llama3.3
+ollama pull llama3.2
 ```
 
-**Supported models**: `llama3.3`, `mistral`, `codellama`, `deepseek-coder`, `qwen2.5`
-
-**Full guide**: [docs/setup-ollama.md](docs/setup-ollama.md)
-
----
-
-### Using Cloud LLMs (Optional)
-
-To use Claude or OpenAI instead, add your API key to `.env`:
+Optional cloud providers:
 
 ```bash
-# For Claude
 LLM_PROVIDER=claude
-ANTHROPIC_API_KEY=sk-ant-...
-
-# For OpenAI
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=...
 ```
 
-Restart Gedos after changing `.env`.
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=...
+```
 
 ---
 
 ## Requirements
 
-- **macOS** 12.0+ (Monterey or later)
-- **Python** 3.12+
-- **Ollama** (or Claude/OpenAI API key)
-- **Telegram Bot Token** ([create one](https://t.me/BotFather))
-- **Accessibility Permissions** (System Settings > Privacy & Security > Accessibility > Terminal)
+macOS 12.0+, Python 3.12+, Ollama or API key, ffmpeg (for voice)
 
 ---
 
 ## Tech Stack
 
 | Component | Technology |
-|-----------|------------|
-| Language | Python 3.12 |
+| --- | --- |
+| Language | Python 3.12+ |
 | Orchestration | LangGraph |
-| Screen Reading | atomacos / pyobjc (AX Tree) |
-| Mouse & Keyboard | PyAutoGUI + macOS Accessibility API |
-| Browser Automation | Playwright |
-| Telegram Interface | python-telegram-bot |
+| Browser automation | Playwright |
+| Telegram | python-telegram-bot |
 | Memory | SQLite + SQLAlchemy |
+| Scheduler | APScheduler |
 | Local LLM | Ollama |
-| Cloud LLM (optional) | Claude API / OpenAI API |
-| CLI | Rich (colored output) |
+| Cloud LLMs | Claude API, OpenAI API |
+| Voice input | Whisper |
+| Voice output | gTTS + pydub + ffmpeg |
+| Natural language scheduling | parsedatetime + pytz + tzlocal |
+| MCP | `mcp` Python SDK |
+| GitHub automation | Flask + PyGithub |
+| Language detection | langdetect |
+| Screen understanding | macOS Accessibility Tree (AX) |
+
+---
+
+## FAQ
+
+### Does Gedos send my data to the cloud?
+Not by default. Ollama is the default provider, so everything can stay local unless you explicitly configure Claude or OpenAI.
+
+### Does Gedos need Telegram to work?
+No. If no Telegram token is configured, Gedos starts in CLI Mode automatically.
+
+### Can Gedos really control my Mac?
+Yes. Gedos can execute terminal commands, browse the web, read the AX Tree, and control GUI interactions on macOS.
+
+### Can I use Gedos from Claude Desktop or Cursor?
+Yes. Run `gedos --mcp` and connect it as an MCP server. See [docs/mcp.md](docs/mcp.md).
+
+### Is Gedos safe to run unattended?
+It is designed with confirmations, shell hardening, owner pairing, and strict mode by default, but Full Access mode and autonomous workflows still require judgment.
+
+---
+
+## Future
+
+v1.0.0 -> Launch
+
+v1.1.0 -> Linux support
+
+v1.2.0 -> Multi-Mac
+
+v2.0.0 -> Gedos GUI app
 
 ---
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- How to clone and run locally
-- Code style guidelines
-- How to submit a PR
-- Semantic commit reference
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+Apache 2.0
 
 ---
 
-## Roadmap
-
-- **v0.9.0** (current): Release Candidate — feature freeze, documentation, integration tests
-- **v1.0.0**: Public launch 🚀
-- **v1.x**: Linux support
-- **v2.0**: Gedos GUI app (Electron/Tauri) for non-devs
-- **Future**: Gedos Cloud (hosted, zero setup)
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
-
----
-
-## Built By
-
-**Guilherme Santiago** — [@g-dos](https://github.com/g-dos)
-
----
-
-**Gedos** — your Mac, working while you're not.
+Built by Guilherme Santiago - @g-dos
