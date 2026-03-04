@@ -48,6 +48,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start the GitHub webhook server alongside the Telegram bot",
     )
+    parser.add_argument(
+        "command",
+        nargs="*",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -74,10 +79,44 @@ def _banner(mode: str, config: dict) -> None:
     console.print(Panel(lines, title=title, border_style="cyan", expand=False))
 
 
+def _handle_cli_command(command: str) -> Optional[int]:
+    """Handle lightweight CLI commands without starting the Telegram bot."""
+    normalized = (command or "").strip()
+    if not normalized:
+        return None
+    if not normalized.startswith("/voice"):
+        return None
+
+    from interfaces.i18n import t
+
+    parts = normalized.split(maxsplit=1)
+    action = parts[1].strip().lower() if len(parts) > 1 else ""
+    if action == "on":
+        from tools.voice_output import play_voice_response_locally
+
+        message = t("voice_enabled", "en")
+        console.print(message)
+        play_voice_response_locally(message, "en")
+        return 0
+    if action == "off":
+        console.print(t("voice_disabled", "en"))
+        return 0
+    if action == "status":
+        console.print(t("voice_status_off", "en"))
+        return 0
+
+    console.print(t("usage_voice", "en"))
+    return 1
+
+
 def main() -> int:
     """Initialize logging, parse CLI args, and run the Telegram bot."""
     parser = _build_parser()
     args = parser.parse_args()
+    cli_command = " ".join(getattr(args, "command", [])).strip() if hasattr(args, "command") else ""
+    cli_result = _handle_cli_command(cli_command)
+    if cli_result is not None:
+        return cli_result
 
     try:
         config = load_config()
