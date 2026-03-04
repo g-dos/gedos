@@ -149,3 +149,26 @@ async def test_forget_all_clears_requesting_chat(monkeypatch):
 
     assert cleared == ["111"]
     update.message.reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_patterns_lists_active_patterns(monkeypatch):
+    pattern = SimpleNamespace(
+        id="pattern-1",
+        confidence=0.92,
+        trigger="time:friday@17:00",
+        action="git push origin main",
+    )
+    monkeypatch.setattr(telegram_bot, "memory_init_db", lambda: None)
+    monkeypatch.setattr(telegram_bot, "get_owner", lambda: SimpleNamespace(chat_id="111"))
+    monkeypatch.setattr(telegram_bot, "list_allowed_chats", lambda: [])
+    monkeypatch.setattr(telegram_bot, "get_allowed_chat_ids", lambda: set())
+    monkeypatch.setattr(telegram_bot, "get_patterns", lambda user_id: [pattern])
+
+    update = _update(111, "/patterns")
+    await telegram_bot.cmd_patterns(update, None)
+
+    update.message.reply_text.assert_called_once()
+    response = update.message.reply_text.call_args[0][0]
+    assert "learned patterns" in response.lower()
+    assert "git push origin main" in response.lower()

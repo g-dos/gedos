@@ -5,8 +5,10 @@ Full Copilot Mode: detect opportunities and risks.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
+from core.behavior_tracker import get_active_patterns
 from interfaces.i18n import t
 from tools.ax_tree import get_ax_tree
 
@@ -24,6 +26,37 @@ class CopilotHint:
     message: str
     app: Optional[str] = None
     task_hint: Optional[str] = None  # Suggested /task payload for "Run" button
+    source: str = "generic"
+
+
+def _minutes_from_trigger(trigger: str, now: datetime) -> Optional[float]:
+    """Return the absolute minute delta for a time-based trigger."""
+    if not trigger.startswith("time:") or "@" not in trigger:
+        return None
+    try:
+        payload = trigger[5:]
+        day_name, hhmm = payload.split("@", 1)
+        if day_name.lower() != now.strftime("%A").lower():
+            return None
+        hour_text, minute_text = hhmm.split(":", 1)
+        target_minutes = int(hour_text) * 60 + int(minute_text)
+        current_minutes = now.hour * 60 + now.minute
+        return abs(current_minutes - target_minutes)
+    except Exception:
+        return None
+
+
+def _pattern_matches(pattern, app_name: str, last_task: str, now: datetime) -> bool:
+    """Return whether a learned pattern matches the current context."""
+    trigger = (pattern.trigger or "").strip().lower()
+    if pattern.type == "time_based":
+        delta = _minutes_from_trigger(trigger, now)
+        return delta is not None and delta <= 15
+    if pattern.type == "context_based":
+        return trigger == f"app:{app_name.lower().strip()}"
+    if pattern.type == "workflow_based":
+        return trigger == f"after:{last_task.lower().strip()}"
+    return False
 
 
 def analyze_context(
@@ -32,6 +65,9 @@ def analyze_context(
     suggestions_enabled: bool = True,
     lang: str = "en",
     tree: Optional[dict] = None,
+    user_id: Optional[str] = None,
+    last_task: Optional[str] = None,
+    current_time: Optional[datetime] = None,
 ) -> list[CopilotHint]:
     """
     Analyze current AX Tree and return list of hints (suggestions and/or warnings).
@@ -48,6 +84,8 @@ def analyze_context(
         return hints
 
     app_name = (tree.get("app") or "").strip()
+    now = current_time or datetime.utcnow()
+    normalized_last_task = " ".join((last_task or "").strip().lower().split())
     all_text: list[str] = []
     all_window_titles: list[str] = []
 
@@ -85,6 +123,21 @@ def analyze_context(
             ))
 
     if suggestions_enabled and app_name:
+        if user_id:
+            for pattern in get_active_patterns(str(user_id)):
+                if pattern.confidence < 0.6:
+                    continue
+                if not _pattern_matches(pattern, app_name, normalized_last_task, now):
+                    continue
+                hints.append(
+                    CopilotHint(
+                        kind="suggestion",
+                        message=t("copilot_hint_pattern", lang, action=pattern.action),
+                        app=app_name,
+                        task_hint=pattern.action,
+                        source="pattern",
+                    )
+                )
         app_lower = app_name.lower()
         window_text = " ".join(title.lower() for title in all_window_titles)
 

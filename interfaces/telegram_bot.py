@@ -23,11 +23,14 @@ from telegram.ext import (
 
 from core.config import get_telegram_token, pilot_enabled, load_config
 from core.copilot_context import analyze_context
+from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
     add_conversation,
     add_allowed_chat,
     add_task as memory_add_task,
+    delete_pattern,
     delete_all_patterns,
+    get_patterns,
     get_recent_tasks,
     get_owner,
     init_db as memory_init_db,
@@ -36,6 +39,7 @@ from core.memory import (
     list_allowed_chats,
     remove_allowed_chat,
     set_owner,
+    update_pattern_preferences,
 )
 from interfaces.i18n import t
 from core.orchestrator import clear_stop, is_stop_requested, request_stop, run_task_with_langgraph
@@ -60,8 +64,10 @@ _copilot_sensitivity_per_user: dict[int, str] = {}
 _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
 _pending_plan_decision: dict[int, asyncio.Future] = {}
 _pending_destructive_decision: dict[int, asyncio.Future] = {}
+_pending_pattern_decision: dict[int, dict] = {}
 _unauthorized_chat_log_at: dict[str, float] = {}
 _generated_pairing_code: Optional[str] = None
+_pattern_index_per_user: dict[int, list[str]] = {}
 
 # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
@@ -266,8 +272,103 @@ def _copilot_sensitivity_label(user_id: int, lang: str) -> str:
     return t(f"copilot_sensitivity_{_copilot_sensitivity(user_id)}", lang)
 
 
+def _pattern_trigger_label(pattern, lang: str) -> str:
+    """Render a learned pattern trigger for human-readable output."""
+    trigger = (pattern.trigger or "").strip()
+    if trigger.startswith("time:") and "@" in trigger:
+        try:
+            payload = trigger[5:]
+            day_name, hhmm = payload.split("@", 1)
+            hour_text, minute_text = hhmm.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            suffix = "am" if hour < 12 else "pm"
+            display_hour = hour % 12 or 12
+            time_label = f"{display_hour}{suffix}" if minute == 0 else f"{display_hour}:{minute:02d}{suffix}"
+            return t("pattern_trigger_time", lang, day=day_name.title(), time=time_label)
+        except Exception:
+            return trigger
+    if trigger.startswith("after:"):
+        return t("pattern_trigger_after", lang, trigger=trigger[6:])
+    if trigger.startswith("app:"):
+        return t("pattern_trigger_app", lang, trigger=trigger[4:])
+    return trigger
+
+
+def _pattern_line(index: int, pattern, lang: str) -> str:
+    """Format one pattern line for /patterns output."""
+    return t(
+        "patterns_item",
+        lang,
+        n=index,
+        confidence=int(round((pattern.confidence or 0.0) * 100)),
+        trigger=_pattern_trigger_label(pattern, lang),
+        action=pattern.action,
+    )
+
+
+def _pattern_automation_message(pattern, lang: str) -> str:
+    """Render the proactive confirmation message for a newly confirmed pattern."""
+    return t(
+        "pattern_confirmed",
+        lang,
+        trigger=_pattern_trigger_label(pattern, lang),
+        action=pattern.action,
+    )
+
+
+def _schedule_pattern_automation(pattern, user_id: str) -> bool:
+    """Best-effort convert a time-based learned pattern into an existing schedule."""
+    if pattern.type != "time_based":
+        return False
+    trigger = (pattern.trigger or "").strip()
+    if not trigger.startswith("time:") or "@" not in trigger:
+        return False
+    try:
+        payload = trigger[5:]
+        day_name, hhmm = payload.split("@", 1)
+        from core.scheduler import create_schedule, start_scheduler
+
+        start_scheduler()
+        create_schedule(
+            user_id=str(user_id),
+            frequency="weekly",
+            schedule_time=hhmm,
+            task_description=pattern.action,
+            day_of_week=day_name.lower(),
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to create schedule from pattern %s", pattern.id)
+        return False
+
+
+async def _maybe_notify_new_patterns(update: Update, lang: str, patterns: list) -> None:
+    """Send confirmation prompts for newly confirmed patterns."""
+    if not update.message:
+        return
+    uid = _user_id(update)
+    chat_id = _chat_id(update)
+    if uid is None or chat_id is None:
+        return
+    for pattern in patterns:
+        _pending_pattern_decision[uid] = {"pattern_id": pattern.id, "chat_id": str(chat_id)}
+        await update.message.reply_text(_pattern_automation_message(pattern, lang))
+
+
 def _localized_status_name(status: str, lang: str) -> str:
     return t(f"status_{status}", lang)
+
+
+def _learn_patterns_for_task(task: str, chat_id: Optional[int], context: Optional[dict] = None) -> list:
+    """Record a successful user task and return newly confirmed patterns."""
+    if chat_id is None:
+        return []
+    try:
+        return observe(task, str(chat_id), context or {"time": datetime.utcnow()})
+    except Exception:
+        logger.exception("Behavior tracker observe failed in Telegram task flow")
+        return []
 
 
 async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
@@ -408,12 +509,16 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                     result=summary[:1000],
                     user_id=str(task_user_id) if task_user_id is not None else None,
                 )
+                new_patterns = _learn_patterns_for_task(task, task_user_id)
+            else:
+                new_patterns = []
             
             return {
                 "success": overall_success,
                 "result": summary,
                 "agent_used": f"multi-step ({', '.join(set(agents_used))})",
-                "steps_completed": len(results)
+                "steps_completed": len(results),
+                "new_patterns": new_patterns,
             }
         finally:
             reset_step_cwd()
@@ -511,6 +616,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if uid is not None:
             add_conversation(str(uid), payload, reply)
             memory_add_task(description=payload, status="completed", agent_used="gui", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
+            await _maybe_notify_new_patterns(update, lang, _learn_patterns_for_task(payload, chat_id))
         return
 
     if "clicar" in low or "click" in low:
@@ -531,6 +637,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
                 memory_add_task(description=payload, status="completed", agent_used="gui", result=reply, user_id=str(chat_id) if chat_id is not None else None)
+                await _maybe_notify_new_patterns(update, lang, _learn_patterns_for_task(payload, chat_id))
             return
 
     if _looks_like_shell_command(payload):
@@ -555,6 +662,8 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
+            if result.success:
+                await _maybe_notify_new_patterns(update, lang, _learn_patterns_for_task(payload, chat_id))
         return
 
     # Check if this is a multi-step task for enhanced progress reporting
@@ -633,6 +742,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
+            await _maybe_notify_new_patterns(update, lang, list(out.get("new_patterns") or []))
     return
 
 
@@ -720,6 +830,13 @@ async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not future.done():
             future.set_result(True)
         return
+    if uid is not None and uid in _pending_pattern_decision:
+        decision = _pending_pattern_decision.pop(uid)
+        pattern = update_pattern_preferences(decision["pattern_id"], decision["chat_id"], automated=True)
+        if pattern:
+            _schedule_pattern_automation(pattern, decision["chat_id"])
+            await update.message.reply_text(t("pattern_automation_enabled", lang, action=pattern.action))
+        return
     if uid is None or uid not in _pending_step_decision:
         await update.message.reply_text(t("no_pending_decision", lang))
         return
@@ -745,6 +862,10 @@ async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not future.done():
             future.set_result(False)
         return
+    if uid is not None and uid in _pending_pattern_decision:
+        _pending_pattern_decision.pop(uid, None)
+        await update.message.reply_text(t("pattern_automation_declined", lang))
+        return
     if uid is None or uid not in _pending_step_decision:
         await update.message.reply_text(t("no_pending_decision", lang))
         return
@@ -752,6 +873,20 @@ async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Get the pending decision and cancel execution
     decision_info = _pending_step_decision.pop(uid)
     await decision_info["callback"](False)  # Cancel execution
+
+
+async def cmd_never(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Suppress future suggestions for a newly confirmed pattern."""
+    if _ignore_if_unauthorized(update):
+        return
+    uid = _user_id(update)
+    lang = _user_lang(update)
+    if uid is None or uid not in _pending_pattern_decision:
+        await update.message.reply_text(t("no_pending_decision", lang))
+        return
+    decision = _pending_pattern_decision.pop(uid)
+    update_pattern_preferences(decision["pattern_id"], decision["chat_id"], suppressed=True, automated=False)
+    await update.message.reply_text(t("pattern_suppressed", lang))
 
 
 def _is_background_noise_only(text: str) -> bool:
@@ -1095,21 +1230,63 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines))
 
 
+async def cmd_patterns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List active learned patterns for the requesting chat."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update)
+    chat_id = _chat_id(update)
+    uid = _user_id(update)
+    if chat_id is None or uid is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+    patterns = get_patterns(str(chat_id))
+    if not patterns:
+        _pattern_index_per_user[uid] = []
+        await update.message.reply_text(t("patterns_empty", lang))
+        return
+    _pattern_index_per_user[uid] = [pattern.id for pattern in patterns]
+    lines = [t("patterns_header", lang, n=len(patterns))]
+    for index, pattern in enumerate(patterns, start=1):
+        lines.append(_pattern_line(index, pattern, lang))
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Clear all stored learned data for the requesting chat."""
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
     lang = _user_lang(update, update.message.text)
-    parts = update.message.text.strip().split(maxsplit=1)
-    if len(parts) < 2 or parts[1].strip().lower() != "all":
-        await update.message.reply_text(t("usage_forget", lang))
-        return
     chat_id = _chat_id(update)
+    uid = _user_id(update)
     if chat_id is None:
         await update.message.reply_text(t("cannot_identify_user", lang))
         return
-    delete_all_patterns(str(chat_id))
-    await update.message.reply_text(t("forget_cleared", lang))
+    parts = update.message.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        await update.message.reply_text(t("usage_forget", lang))
+        return
+    arg = parts[1].strip().lower()
+    if arg == "all":
+        delete_all_patterns(str(chat_id))
+        _pattern_index_per_user.pop(uid or 0, None)
+        await update.message.reply_text(t("forget_cleared", lang))
+        return
+    if not arg.isdigit() or uid is None:
+        await update.message.reply_text(t("usage_forget", lang))
+        return
+    index = int(arg)
+    pattern_ids = _pattern_index_per_user.get(uid) or []
+    if index < 1 or index > len(pattern_ids):
+        await update.message.reply_text(t("pattern_not_found", lang, id=index))
+        return
+    pattern_id = pattern_ids[index - 1]
+    if not delete_pattern(pattern_id, str(chat_id)):
+        await update.message.reply_text(t("pattern_not_found", lang, id=index))
+        return
+    updated_ids = [pid for pid in pattern_ids if pid != pattern_id]
+    _pattern_index_per_user[uid] = updated_ids
+    await update.message.reply_text(t("pattern_removed", lang, id=index))
 
 
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1166,18 +1343,26 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             if not active:
                 continue
             lang = get_user_language(str(uid)) or "en"
+            recent_tasks = get_recent_tasks(limit=1, user_id=str(uid))
+            last_task = recent_tasks[0].description if recent_tasks else ""
             hints = analyze_context(
                 warnings_enabled=warnings_ok,
                 suggestions_enabled=suggestions_ok,
                 lang=lang,
                 tree=tree,
+                user_id=str(uid),
+                last_task=last_task,
+                current_time=datetime.utcnow(),
             )
             if not hints:
                 continue
             hint = next((h for h in hints if h.kind == "warning"), hints[0])
             if hint.kind == "suggestion":
                 last_ts = _last_copilot_suggestion_at_per_user.get(uid)
-                if last_ts is not None and (time() - last_ts) < _copilot_cooldown_seconds(uid):
+                suggestion_cooldown = _copilot_cooldown_seconds(uid)
+                if hint.source == "pattern":
+                    suggestion_cooldown = max(suggestion_cooldown, 60.0)
+                if last_ts is not None and (time() - last_ts) < suggestion_cooldown:
                     continue
             msg = hint.message
             last_msg = _last_copilot_message_per_user.get(uid)
@@ -1309,6 +1494,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("copilot", cmd_copilot))
     app.add_handler(CommandHandler("memory", cmd_memory))
+    app.add_handler(CommandHandler("patterns", cmd_patterns))
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
@@ -1317,6 +1503,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("owner", cmd_owner))
     app.add_handler(CommandHandler("yes", cmd_yes))
     app.add_handler(CommandHandler("no", cmd_no))
+    app.add_handler(CommandHandler("never", cmd_never))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("schedules", cmd_schedules))
     app.add_handler(CommandHandler("unschedule", cmd_unschedule))
@@ -1325,6 +1512,7 @@ def build_application() -> Application:
 
     copilot_cfg = config.get("copilot") or {}
     interval = copilot_cfg.get("check_interval", 10)
+    start_background_tracker(interval_seconds=max(interval, 30))
     if app.job_queue and interval > 0:
         app.job_queue.run_repeating(_copilot_job, interval=interval, first=interval)
 
