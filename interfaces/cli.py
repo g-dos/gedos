@@ -21,6 +21,7 @@ from core.config import (
 from core.llm import complete
 from core.memory import (
     add_context,
+    get_custom_permissions,
     delete_all_patterns,
     delete_pattern,
     get_owner,
@@ -29,9 +30,11 @@ from core.memory import (
     get_recent_context,
     get_recent_tasks,
     init_db,
+    set_custom_permissions,
     set_permission_level,
 )
 from core.orchestrator import clear_stop, request_stop, run_task_with_langgraph
+from core.security import get_command_permission_action
 from tools.voice_output import play_voice_response_locally
 
 logger = logging.getLogger(__name__)
@@ -144,11 +147,34 @@ def _ensure_llm_available() -> None:
                 return
 
 
-def _permission_level_to_config(choice: str) -> tuple[str, bool]:
-    """Map onboarding permission choice to persisted values."""
-    if choice == "2":
-        return ("full_access", False)
-    return ("default", True)
+_CUSTOM_PERMISSION_FIELDS = (
+    ("terminal_destructive", "Terminal — destructive commands (rm, mv, git push)?"),
+    ("web_browsing", "Web browsing?"),
+    ("filesystem_writes", "File system writes?"),
+    ("package_install", "Install packages (pip, npm, brew)?"),
+    ("github_operations", "GitHub operations (push, PR, commit)?"),
+)
+
+
+def _prompt_custom_permissions() -> dict[str, str]:
+    """Collect granular permission choices in CLI mode."""
+    choices = {"a": "allow", "c": "confirm", "b": "block"}
+    permissions: dict[str, str] = {}
+    for key, label in _CUSTOM_PERMISSION_FIELDS:
+        while True:
+            print(
+                f"{label}\n"
+                "  [A] Always allow  [C] Confirm each time  [B] Always block\n"
+                "  > ",
+                end="",
+                flush=True,
+            )
+            answer = input().strip().lower()
+            if answer in choices:
+                permissions[key] = choices[answer]
+                break
+    print("✅ Custom permissions saved.\n   You can edit anytime with /permissions")
+    return permissions
 
 
 def _gedos_md_template(name: str, refer_as: str, permission_level: str) -> str:
@@ -214,14 +240,28 @@ def _run_onboarding() -> None:
 
     print(
         "Choose permission level:\n"
-        "[1] Default (recommended) — destructive commands require approval\n"
-        "[2] Full Access (Elevated Risk) — no restrictions\n"
-        "Choice [1/2]: ",
+        "[1] Default (recommended)\n"
+        "    Destructive commands require approval.\n"
+        "\n"
+        "[2] Custom\n"
+        "    You choose exactly what requires approval.\n"
+        "\n"
+        "[3] Full Access (Elevated Risk)\n"
+        "    No restrictions. Use with caution.\n"
+        "Choice [1/2/3]: ",
         end="",
         flush=True,
     )
     permission_choice = input().strip()
-    permission_level, strict_shell = _permission_level_to_config(permission_choice)
+    permission_level = "default"
+    strict_shell = True
+    custom_permissions: dict[str, str] = {}
+    if permission_choice == "2":
+        permission_level = "custom"
+        custom_permissions = _prompt_custom_permissions()
+    elif permission_choice == "3":
+        permission_level = "full_access"
+        strict_shell = False
 
     print(
         "Enable Pilot Mode via Telegram? (optional)\n"
@@ -246,6 +286,8 @@ def _run_onboarding() -> None:
     )
     update_config({"security": {"strict_shell": strict_shell}})
     set_permission_level(CLI_USER_ID, permission_level)
+    if permission_level == "custom":
+        set_custom_permissions(CLI_USER_ID, custom_permissions)
     print(f"Welcome, {name}. CLI Mode is ready.")
 
 
@@ -335,16 +377,36 @@ def _permission_status_text() -> str:
     level = get_permission_level(CLI_USER_ID) or ("default" if load_gedos_profile().get("level", "default") == "default" else "full_access")
     if level == "full_access":
         return "Permission level: Full Access\nDestructive commands run without approval."
+    if level == "custom":
+        permissions = get_custom_permissions(CLI_USER_ID)
+        lines = ["Permission level: Custom", "Granular rules:"]
+        for key, _ in _CUSTOM_PERMISSION_FIELDS:
+            lines.append(f"- {key}: {permissions.get(key, 'confirm')}")
+        return "\n".join(lines)
     return "Permission level: Default\nDestructive commands require approval."
 
 
 def _set_permission(level: str) -> str:
     """Persist a permission level change to config and memory."""
-    normalized = "full_access" if level in {"full", "full_access"} else "default"
+    if level in {"full", "full_access"}:
+        normalized = "full_access"
+    elif level == "custom":
+        normalized = "custom"
+    else:
+        normalized = "default"
     strict_shell = normalized != "full_access"
     update_config({"security": {"strict_shell": strict_shell}})
     set_permission_level(CLI_USER_ID, normalized)
+    if normalized == "custom":
+        set_custom_permissions(CLI_USER_ID, _prompt_custom_permissions())
+        return "Permission level set to Custom."
     return "Permission level set to Full Access." if normalized == "full_access" else "Permission level set to Default."
+
+
+def _confirm_cli_permission(detail: str) -> bool:
+    """Prompt once for a confirm-style permission in CLI mode."""
+    answer = input(f"{detail}\n[A] Allow once  [D] Deny > ").strip().lower()
+    return answer in {"a", "allow", "y", "yes"}
 
 
 def _format_patterns() -> str:
@@ -451,6 +513,8 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         return (f"Opened {get_gedos_md_path()}", voice_enabled)
     if text == "/permissions":
         return (_permission_status_text(), voice_enabled)
+    if text == "/permissions custom":
+        return (_set_permission("custom"), voice_enabled)
     if text == "/permissions default":
         return (_set_permission("default"), voice_enabled)
     if text == "/permissions full":
@@ -531,9 +595,20 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
     if text.startswith("/ask "):
         return (complete(text[5:].strip(), language="en"), voice_enabled)
     if text.startswith("/web "):
+        web_action = get_command_permission_action("", user_id=CLI_USER_ID, category_override="web_browsing")
+        if web_action == "block":
+            return ("Web browsing is blocked by your custom permissions.", voice_enabled)
+        if web_action == "confirm" and not _confirm_cli_permission("Web browsing requires approval. Continue?"):
+            return ("Web browsing denied.", voice_enabled)
         return (_format_web_result(text[5:].strip()), voice_enabled)
 
     task = text[6:].strip() if text.startswith("/task ") else text
+    command_action = get_command_permission_action(task, user_id=CLI_USER_ID)
+    if command_action == "block":
+        return ("This command is blocked by your custom permissions.", voice_enabled)
+    if command_action == "confirm" and _looks_like_shell_command(task):
+        if not _confirm_cli_permission(f"Command requires approval:\n{task}"):
+            return ("Command denied.", voice_enabled)
     clear_stop()
     _CLI_TASK_STATUS = "running"
     _CLI_CURRENT_TASK = task

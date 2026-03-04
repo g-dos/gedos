@@ -31,6 +31,7 @@ from core.memory import (
     add_task as memory_add_task,
     delete_pattern,
     delete_all_patterns,
+    get_custom_permissions,
     get_permission_level,
     get_voice_output,
     get_patterns,
@@ -41,6 +42,7 @@ from core.memory import (
     get_user_language,
     list_allowed_chats,
     remove_allowed_chat,
+    set_custom_permissions,
     set_permission_level,
     set_voice_output,
     set_owner,
@@ -50,7 +52,13 @@ from interfaces.i18n import t
 from core.orchestrator import clear_stop, is_stop_requested, request_stop, run_task_with_langgraph
 from agents.terminal_agent import run_shell, TerminalResult
 from agents.gui_agent import click_button
-from core.security import SecurityError, get_allowed_chat_ids, get_pairing_code, is_destructive_command
+from core.security import (
+    SecurityError,
+    get_allowed_chat_ids,
+    get_command_permission_action,
+    get_pairing_code,
+    is_destructive_command,
+)
 from tools.ax_tree import get_ax_tree
 from tools.voice_output import send_voice_response, text_to_speech_safe
 
@@ -71,6 +79,7 @@ _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
 _pending_plan_decision: dict[int, asyncio.Future] = {}
 _pending_destructive_decision: dict[int, asyncio.Future] = {}
 _pending_pattern_decision: dict[int, dict] = {}
+_pending_custom_permission_flow: dict[int, dict] = {}
 _unauthorized_chat_log_at: dict[str, float] = {}
 _generated_pairing_code: Optional[str] = None
 _pattern_index_per_user: dict[int, list[str]] = {}
@@ -90,6 +99,13 @@ _STEP_ICONS = {
     "gui": "🪟",
     "llm": "🧠",
 }
+_CUSTOM_PERMISSION_FIELDS = (
+    ("terminal_destructive", "permissions_custom_prompt_terminal_destructive"),
+    ("web_browsing", "permissions_custom_prompt_web_browsing"),
+    ("filesystem_writes", "permissions_custom_prompt_filesystem_writes"),
+    ("package_install", "permissions_custom_prompt_package_install"),
+    ("github_operations", "permissions_custom_prompt_github_operations"),
+)
 
 
 def _looks_like_shell_command(payload: str) -> bool:
@@ -289,14 +305,60 @@ def _permission_status_message(user_id: str, lang: str) -> str:
     level = get_permission_level(str(user_id))
     if level is None:
         level = "default" if (load_config().get("security") or {}).get("strict_shell", True) else "full_access"
-    return t("permissions_status_full", lang) if level == "full_access" else t("permissions_status_default", lang)
+    if level == "full_access":
+        return t("permissions_status_full", lang)
+    if level == "custom":
+        permissions = get_custom_permissions(str(user_id))
+        lines = [t("permissions_status_custom", lang)]
+        for key, _ in _CUSTOM_PERMISSION_FIELDS:
+            lines.append(f"- {key}: {permissions.get(key, 'confirm')}")
+        return "\n".join(lines)
+    return t("permissions_status_default", lang)
 
 
 def _set_permission_preference(user_id: str, level: str) -> None:
     """Persist permission level in config and user context."""
-    normalized = "full_access" if str(level).strip().lower() in {"full", "full_access"} else "default"
+    requested = str(level).strip().lower()
+    if requested in {"full", "full_access"}:
+        normalized = "full_access"
+    elif requested == "custom":
+        normalized = "custom"
+    else:
+        normalized = "default"
     update_config({"security": {"strict_shell": normalized != "full_access"}})
     set_permission_level(str(user_id), normalized)
+
+
+async def _prompt_permission_confirmation(update: Update, lang: str, detail: str) -> bool:
+    """Ask for a one-off permission confirmation."""
+    uid = _user_id(update)
+    if uid is None or not update.message:
+        return False
+    await update.message.reply_text(t("permission_request_confirm", lang, detail=detail))
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _pending_destructive_decision[uid] = future
+    try:
+        return bool(await asyncio.wait_for(future, timeout=300.0))
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        _pending_destructive_decision.pop(uid, None)
+
+
+async def _start_custom_permissions_flow(update: Update, lang: str) -> None:
+    """Begin the step-by-step custom permissions flow in Telegram."""
+    uid = _user_id(update)
+    chat_id = _chat_id(update)
+    if uid is None or chat_id is None or not update.message:
+        return
+    _pending_custom_permission_flow[uid] = {
+        "user_id": str(chat_id),
+        "lang": lang,
+        "index": 0,
+        "values": {},
+    }
+    first_key = _CUSTOM_PERMISSION_FIELDS[0][1]
+    await update.message.reply_text(t(first_key, lang))
 
 
 def _format_demo_plan(plan) -> str:
@@ -734,6 +796,10 @@ async def cmd_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _set_permission_preference(str(chat_id), "default")
         await update.message.reply_text(t("permissions_set_default", lang))
         return
+    if action == "custom":
+        _set_permission_preference(str(chat_id), "custom")
+        await _start_custom_permissions_flow(update, lang)
+        return
     if action == "full":
         if len(parts) < 3 or parts[2].lower() != "confirm":
             await update.message.reply_text(t("permissions_confirm_full", lang))
@@ -814,10 +880,16 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
     if _looks_like_shell_command(payload):
-        if is_destructive_command(payload):
-            if not await _confirm_destructive_command(update, lang, payload):
+        legacy_destructive = is_destructive_command(payload, user_id=str(chat_id) if chat_id is not None else None)
+        permission_action = get_command_permission_action(payload, user_id=str(chat_id) if chat_id is not None else None)
+        if permission_action == "block":
+            _task_status = "idle"
+            await update.message.reply_text(t("permission_blocked", lang))
+            return
+        if permission_action == "confirm" or legacy_destructive:
+            if not await _prompt_permission_confirmation(update, lang, payload):
                 _task_status = "idle"
-                await update.message.reply_text(t("destructive_denied", lang))
+                await update.message.reply_text(t("permission_request_denied", lang))
                 return
         if _task_cancelled or is_stop_requested():
             _task_status = "idle"
@@ -1055,6 +1127,33 @@ async def cmd_never(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     decision = _pending_pattern_decision.pop(uid)
     update_pattern_preferences(decision["pattern_id"], decision["chat_id"], suppressed=True, automated=False)
     await update.message.reply_text(t("pattern_suppressed", lang))
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle non-command text only for pending interactive flows."""
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
+        return
+    uid = _user_id(update)
+    if uid is None or uid not in _pending_custom_permission_flow:
+        return
+    state = _pending_custom_permission_flow[uid]
+    choice = update.message.text.strip().lower()
+    mapping = {"a": "allow", "c": "confirm", "b": "block"}
+    lang = state["lang"]
+    if choice not in mapping:
+        await update.message.reply_text(t("permissions_custom_invalid_choice", lang))
+        return
+    field_key, _ = _CUSTOM_PERMISSION_FIELDS[state["index"]]
+    state["values"][field_key] = mapping[choice]
+    state["index"] += 1
+    if state["index"] >= len(_CUSTOM_PERMISSION_FIELDS):
+        set_custom_permissions(state["user_id"], state["values"])
+        _pending_custom_permission_flow.pop(uid, None)
+        await update.message.reply_text(t("permissions_set_custom", lang))
+        await update.message.reply_text(t("permissions_custom_saved", lang))
+        return
+    next_prompt_key = _CUSTOM_PERMISSION_FIELDS[state["index"]][1]
+    await update.message.reply_text(t(next_prompt_key, lang))
 
 
 def _is_background_noise_only(text: str) -> bool:
@@ -1500,6 +1599,15 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not url:
         await update.message.reply_text(t("usage_web", lang))
         return
+    chat_id = _chat_id(update)
+    permission_action = get_command_permission_action("", user_id=str(chat_id) if chat_id is not None else None, category_override="web_browsing")
+    if permission_action == "block":
+        await update.message.reply_text(t("permission_blocked", lang))
+        return
+    if permission_action == "confirm":
+        if not await _prompt_permission_confirmation(update, lang, url):
+            await update.message.reply_text(t("permission_request_denied", lang))
+            return
     from agents.web_agent import navigate
     r = navigate(url)
     if r.success:
@@ -1664,18 +1772,7 @@ async def _confirm_destructive_command(update: Update, lang: str, command: str) 
     """Require explicit confirmation before a destructive command."""
     if _full_access_mode():
         return True
-    uid = _user_id(update)
-    if uid is None or not update.message:
-        return False
-    await update.message.reply_text(t("destructive_confirm", lang, command=command))
-    future: asyncio.Future = asyncio.get_running_loop().create_future()
-    _pending_destructive_decision[uid] = future
-    try:
-        return bool(await asyncio.wait_for(future, timeout=300.0))
-    except asyncio.TimeoutError:
-        return False
-    finally:
-        _pending_destructive_decision.pop(uid, None)
+    return await _prompt_permission_confirmation(update, lang, command)
 
 
 def build_application() -> Application:
@@ -1712,6 +1809,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("schedules", cmd_schedules))
     app.add_handler(CommandHandler("unschedule", cmd_unschedule))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     app.add_error_handler(_error_handler)
 

@@ -83,6 +83,13 @@ _SENSITIVE_SUFFIXES = (".env", ".pem", ".key", ".cert", ".p12", ".pfx", ".db", "
 _SENSITIVE_SEARCH_PATTERNS = {"*.env", "*.key"}
 _PROJECTS_ROOT = os.path.realpath(os.path.expanduser("~/projects"))
 MAX_COMMAND_LENGTH = 1000
+DEFAULT_CUSTOM_PERMISSIONS = {
+    "terminal_destructive": "confirm",
+    "web_browsing": "confirm",
+    "filesystem_writes": "confirm",
+    "package_install": "confirm",
+    "github_operations": "confirm",
+}
 
 
 class SecurityError(RuntimeError):
@@ -392,10 +399,55 @@ def _is_safe_destination(token: str, cwd: Optional[str]) -> bool:
     return normalized == _PROJECTS_ROOT or normalized.startswith(_PROJECTS_ROOT + os.sep)
 
 
-def is_destructive_command(command: str) -> bool:
+def is_destructive_command(command: str, user_id: Optional[str] = None) -> bool:
     """Return whether a command matches a destructive pattern."""
+    return get_command_permission_action(command, user_id=user_id) == "confirm"
+
+
+def get_command_permission_action(
+    command: str,
+    user_id: Optional[str] = None,
+    category_override: Optional[str] = None,
+) -> str:
+    """Return allow|confirm|block for a command under the user's permission profile."""
+    category = category_override or classify_permission_category(command)
+    level = "default"
+    custom_permissions: dict[str, str] = {}
+    if user_id is not None:
+        try:
+            from core.memory import get_custom_permissions, get_permission_level
+
+            level = get_permission_level(str(user_id)) or "default"
+            custom_permissions = get_custom_permissions(str(user_id))
+        except Exception:
+            logger.exception("Failed to read permission profile for user %s", user_id)
+            level = "default"
+            custom_permissions = {}
+
+    if level == "full_access":
+        return "allow"
+    if level == "custom" and category:
+        return custom_permissions.get(category, DEFAULT_CUSTOM_PERMISSIONS.get(category, "confirm"))
+    if category_override:
+        return "allow"
     low = (command or "").strip().lower()
-    return any(re.search(pattern, low) for pattern in DESTRUCTIVE_PATTERNS)
+    return "confirm" if any(re.search(pattern, low) for pattern in DESTRUCTIVE_PATTERNS) else "allow"
+
+
+def classify_permission_category(command: str) -> Optional[str]:
+    """Map a shell command to a granular permission category."""
+    low = (command or "").strip().lower()
+    if not low:
+        return None
+    if low.startswith(("pip install", "npm install", "brew install")):
+        return "package_install"
+    if low.startswith(("git push", "git commit")):
+        return "github_operations"
+    if low.startswith(("cp ", "mv ", "touch ", "mkdir ")):
+        return "filesystem_writes"
+    if any(re.search(pattern, low) for pattern in DESTRUCTIVE_PATTERNS):
+        return "terminal_destructive"
+    return None
 
 
 def get_allowed_chat_ids() -> set[str]:

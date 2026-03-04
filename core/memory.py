@@ -414,10 +414,41 @@ def get_permission_level(user_id: str, session: Optional[Session] = None) -> Opt
 
 def set_permission_level(user_id: str, level: str, session: Optional[Session] = None) -> Context:
     """Store permission level preference for a user."""
-    normalized = "full_access" if str(level).strip().lower() in {"full", "full_access"} else "default"
+    requested = str(level).strip().lower()
+    if requested in {"full", "full_access"}:
+        normalized = "full_access"
+    elif requested == "custom":
+        normalized = "custom"
+    else:
+        normalized = "default"
     return add_context(
         "permission_level",
         {"user_id": str(user_id), "level": normalized},
+        session=session,
+        user_id=user_id,
+    )
+
+
+def get_custom_permissions(user_id: str, session: Optional[Session] = None) -> dict[str, str]:
+    """Return stored custom permission rules for a user."""
+    entries = get_recent_context(type_name="custom_permissions", limit=50, session=session)
+    for entry in entries:
+        if entry.data.get("user_id") == str(user_id):
+            stored = entry.data.get("permissions") or {}
+            if isinstance(stored, dict):
+                return {str(key): str(value) for key, value in stored.items()}
+    return {}
+
+
+def set_custom_permissions(user_id: str, permissions: dict[str, str], session: Optional[Session] = None) -> Context:
+    """Store granular permission rules for a user."""
+    normalized: dict[str, str] = {}
+    for key, value in (permissions or {}).items():
+        action = str(value).strip().lower()
+        normalized[str(key)] = action if action in {"allow", "confirm", "block"} else "confirm"
+    return add_context(
+        "custom_permissions",
+        {"user_id": str(user_id), "permissions": normalized},
         session=session,
         user_id=user_id,
     )

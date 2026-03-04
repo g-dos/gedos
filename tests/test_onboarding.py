@@ -59,7 +59,7 @@ def test_name_and_refer_as_saved_to_user_context():
 
 
 def test_permission_level_saved_correctly():
-    inputs = ["Santiago", "1", "2", "", "n"]
+    inputs = ["Santiago", "1", "3", "", "n"]
 
     with patch("interfaces.cli._ensure_llm_available"):
         with patch("builtins.input", side_effect=inputs):
