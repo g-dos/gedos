@@ -1240,7 +1240,7 @@ async def cmd_patterns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if chat_id is None or uid is None:
         await update.message.reply_text(t("cannot_identify_user", lang))
         return
-    patterns = get_patterns(str(chat_id))
+    patterns = sorted(get_patterns(str(chat_id)), key=lambda pattern: pattern.confidence, reverse=True)
     if not patterns:
         _pattern_index_per_user[uid] = []
         await update.message.reply_text(t("patterns_empty", lang))

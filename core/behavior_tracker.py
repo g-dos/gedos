@@ -100,7 +100,8 @@ def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, 
 
 def get_active_patterns(user_id: str):
     """Return active non-suppressed patterns for a user."""
-    return memory_get_patterns(str(user_id))
+    patterns = memory_get_patterns(str(user_id), include_suppressed=True)
+    return [pattern for pattern in patterns if not getattr(pattern, "suppressed", False)]
 
 
 def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -> list:
