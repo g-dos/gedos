@@ -2,6 +2,24 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.7] — 2026-03
+
+### Added
+- **Behavior tracker**: introduced pattern learning so Gedos can observe repeated task history and store learned habits over time
+- **Time, context, and workflow detection**: Gedos now detects time-based, context-based, and workflow-based patterns after repeated successful tasks
+- **Pattern command coverage**: added focused tests for `/patterns`, `/forget <id>`, `/forget all`, and proactive pattern notifications
+
+### Enhanced
+- **Confidence scoring with decay**: learned patterns now increase in confidence with repeated use, decay after inactivity, and cap at a bounded score
+- **Per-user pattern limits**: Gedos now enforces a maximum of 50 active learned patterns per user
+- **Proactive habit suggestions**: Copilot can now suggest likely next actions based on confirmed learned patterns
+- **Third-occurrence confirmation**: Gedos notifies the user when a new pattern is first confirmed on the third occurrence
+- **Pattern listing and forgetting**: `/patterns` shows learned habits with confidence percentages, while `/forget <id>` and `/forget all` remove them
+- **Pattern suppression**: users can permanently suppress future suggestions for a specific learned pattern
+
+### Validation
+- **Test suite**: all tests pass with the new behavior and pattern command coverage (`120 passed`)
+
 ## [0.9.6.3] — 2026-03
 
 ### Security Hardening Patch 3
