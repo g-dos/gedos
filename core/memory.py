@@ -109,6 +109,8 @@ class Pattern(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     confidence: Mapped[float] = mapped_column(default=0.1)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
+    suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    automated: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 def get_engine(database_path: Optional[str] = None):
@@ -191,6 +193,18 @@ def init_db(engine=None):
     try:
         with engine.connect() as conn:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_patterns_user_id ON patterns (user_id)"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE patterns ADD COLUMN suppressed BOOLEAN DEFAULT 0"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE patterns ADD COLUMN automated BOOLEAN DEFAULT 0"))
             conn.commit()
     except Exception:
         pass
@@ -637,6 +651,8 @@ def add_or_update_pattern(pattern_data: dict[str, Any], session: Optional[Sessio
             existing.last_seen = pattern_data.get("last_seen") or existing.last_seen
             existing.confidence = float(pattern_data.get("confidence") or _pattern_confidence(existing.occurrences))
             existing.active = bool(pattern_data.get("active", existing.occurrences >= 3))
+            existing.suppressed = bool(pattern_data.get("suppressed", existing.suppressed))
+            existing.automated = bool(pattern_data.get("automated", existing.automated))
             pattern = existing
         else:
             pattern = Pattern(
@@ -649,6 +665,8 @@ def add_or_update_pattern(pattern_data: dict[str, Any], session: Optional[Sessio
                 last_seen=pattern_data.get("last_seen") or datetime.utcnow(),
                 confidence=float(pattern_data.get("confidence", _pattern_confidence(int(pattern_data.get("occurrences", 1))))),
                 active=bool(pattern_data.get("active", int(pattern_data.get("occurrences", 1)) >= 3)),
+                suppressed=bool(pattern_data.get("suppressed", False)),
+                automated=bool(pattern_data.get("automated", False)),
             )
             session.add(pattern)
         _trim_active_patterns(user_id, session)
@@ -660,18 +678,16 @@ def add_or_update_pattern(pattern_data: dict[str, Any], session: Optional[Sessio
             session.close()
 
 
-def get_patterns(user_id: str, session: Optional[Session] = None) -> list[Pattern]:
+def get_patterns(user_id: str, include_suppressed: bool = False, session: Optional[Session] = None) -> list[Pattern]:
     """Return active patterns for a user ordered by confidence."""
     own_session = session is None
     if own_session:
         session = get_session()
     try:
-        return list(
-            session.query(Pattern)
-            .filter(Pattern.user_id == str(user_id), Pattern.active == True)
-            .order_by(Pattern.confidence.desc(), Pattern.last_seen.desc())
-            .all()
-        )
+        query = session.query(Pattern).filter(Pattern.user_id == str(user_id), Pattern.active == True)
+        if not include_suppressed:
+            query = query.filter(Pattern.suppressed == False)
+        return list(query.order_by(Pattern.confidence.desc(), Pattern.last_seen.desc()).all())
     finally:
         if own_session:
             session.close()
@@ -736,6 +752,37 @@ def delete_pattern(pattern_id: str, user_id: str, session: Optional[Session] = N
         session.delete(pattern)
         session.commit()
         return True
+    finally:
+        if own_session:
+            session.close()
+
+
+def update_pattern_preferences(
+    pattern_id: str,
+    user_id: str,
+    *,
+    suppressed: Optional[bool] = None,
+    automated: Optional[bool] = None,
+    active: Optional[bool] = None,
+    session: Optional[Session] = None,
+) -> Optional[Pattern]:
+    """Update preference flags for a specific pattern."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        pattern = session.get(Pattern, str(pattern_id))
+        if not pattern or pattern.user_id != str(user_id):
+            return None
+        if suppressed is not None:
+            pattern.suppressed = bool(suppressed)
+        if automated is not None:
+            pattern.automated = bool(automated)
+        if active is not None:
+            pattern.active = bool(active)
+        session.commit()
+        session.refresh(pattern)
+        return pattern
     finally:
         if own_session:
             session.close()

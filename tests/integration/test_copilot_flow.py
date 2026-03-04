@@ -101,3 +101,30 @@ def test_copilot_error_detection():
     
     assert isinstance(result, list)
     assert any(hint.kind == "warning" for hint in result)
+
+
+def test_copilot_pattern_suggestion():
+    """Test Copilot surfaces learned patterns when confidence and context match."""
+    mock_tree = {
+        "app": "Visual Studio Code",
+        "windows": [],
+        "buttons": [],
+        "text_fields": [],
+        "error": None,
+    }
+    pattern = type(
+        "PatternStub",
+        (),
+        {
+            "type": "context_based",
+            "trigger": "app:visual studio code",
+            "action": "pytest",
+            "confidence": 0.8,
+        },
+    )()
+
+    with patch("core.copilot_context.get_active_patterns", return_value=[pattern]):
+        result = analyze_context(tree=mock_tree, user_id="123", last_task="git commit")
+
+    assert any(hint.source == "pattern" for hint in result)
+    assert any("usually pytest" in hint.message.lower() for hint in result)

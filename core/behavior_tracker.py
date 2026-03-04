@@ -14,6 +14,7 @@ from uuid import uuid4
 from core.memory import (
     add_or_update_pattern,
     decay_patterns,
+    get_patterns as memory_get_patterns,
     get_recent_tasks,
 )
 
@@ -45,8 +46,8 @@ def _remember_task(task_id: Optional[int]) -> bool:
     return True
 
 
-def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, seen_at: datetime) -> None:
-    """Create or increment a pattern record."""
+def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, seen_at: datetime):
+    """Create or increment a pattern record and flag first confirmation."""
     from core.memory import get_session, Pattern
 
     with get_session() as session:
@@ -56,6 +57,8 @@ def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, 
             .first()
         )
         if existing:
+            next_occurrences = existing.occurrences + 1
+            was_inactive = not existing.active
             add_or_update_pattern(
                 {
                     "id": existing.id,
@@ -63,15 +66,22 @@ def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, 
                     "type": pattern_type,
                     "trigger": trigger,
                     "action": action,
-                    "occurrences": existing.occurrences + 1,
+                    "occurrences": next_occurrences,
                     "last_seen": max(existing.last_seen, seen_at),
-                    "confidence": min((existing.occurrences + 1) / 10.0, 1.0),
-                    "active": existing.occurrences + 1 >= 3,
+                    "confidence": min(next_occurrences / 10.0, 1.0),
+                    "active": next_occurrences >= 3,
+                    "suppressed": existing.suppressed,
+                    "automated": existing.automated,
                 },
                 session=session,
             )
-            return
-        add_or_update_pattern(
+            refreshed = (
+                session.query(Pattern)
+                .filter(Pattern.user_id == str(user_id), Pattern.trigger == trigger, Pattern.action == action)
+                .first()
+            )
+            return refreshed, bool(refreshed and was_inactive and refreshed.active and not refreshed.suppressed)
+        created = add_or_update_pattern(
             {
                 "id": str(uuid4()),
                 "user_id": str(user_id),
@@ -85,35 +95,49 @@ def _upsert_pattern(user_id: str, pattern_type: str, trigger: str, action: str, 
             },
             session=session,
         )
+        return created, False
 
 
-def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -> None:
+def get_active_patterns(user_id: str):
+    """Return active non-suppressed patterns for a user."""
+    return memory_get_patterns(str(user_id))
+
+
+def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -> list:
     """Inspect a completed task and learn repeated patterns for that user."""
     if not user_id or not task:
-        return
+        return []
 
     context = dict(context or {})
     action = _normalize_action(task)
     if not action:
-        return
+        return []
 
     seen_at = context.get("time")
     if not isinstance(seen_at, datetime):
         seen_at = datetime.utcnow()
 
     decay_patterns(str(user_id))
+    newly_confirmed = []
 
     weekday = seen_at.strftime("%A").lower()
     hour = seen_at.strftime("%H:00")
-    _upsert_pattern(str(user_id), "time_based", f"time:{weekday}@{hour}", action, seen_at)
+    pattern, confirmed = _upsert_pattern(str(user_id), "time_based", f"time:{weekday}@{hour}", action, seen_at)
+    if confirmed:
+        newly_confirmed.append(pattern)
 
     current_app = " ".join(str(context.get("current_app") or "").strip().split())
     if current_app:
-        _upsert_pattern(str(user_id), "context_based", f"app:{current_app.lower()}", action, seen_at)
+        pattern, confirmed = _upsert_pattern(str(user_id), "context_based", f"app:{current_app.lower()}", action, seen_at)
+        if confirmed:
+            newly_confirmed.append(pattern)
 
     preceding_task = _normalize_action(str(context.get("preceding_task") or ""))
     if preceding_task and preceding_task != action:
-        _upsert_pattern(str(user_id), "workflow_based", f"after:{preceding_task}", action, seen_at)
+        pattern, confirmed = _upsert_pattern(str(user_id), "workflow_based", f"after:{preceding_task}", action, seen_at)
+        if confirmed:
+            newly_confirmed.append(pattern)
+    return newly_confirmed
 
 
 def observe_recent_history(limit: int = 100) -> int:
