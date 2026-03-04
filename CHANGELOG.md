@@ -2,6 +2,22 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.6.1] — 2026-03
+
+### Security Hardening
+- **Shell injection hardening**: `sanitize_command()` is now mandatory before shell execution and enforces a strict executable allowlist
+- **Strict shell mode**: terminal execution now uses `shell=False` with tokenized args, making injection through shell metacharacters structurally impossible
+- **Telegram owner pairing**: the first authorized `/start` pairs an owner chat, while unauthorized chats are silently ignored after pairing
+- **Webhook replay protection**: GitHub webhook handling now rejects stale events, duplicate delivery IDs, and bursts over the per-minute rate limit
+- **PR gating**: CI auto-healing now always opens a PR only, disables auto-merge, applies the `gedos-bot` label, and adds a verification checklist to the PR body
+- **Destructive command confirmation**: risky commands now require explicit confirmation before Telegram task execution in strict mode
+- **Kill switch hardening**: the shared stop signal now uses `asyncio.Event()` so `/stop` reliably interrupts multi-step work between steps
+- **Dry-run planning**: multi-step task execution now shows a plan preview and requires confirmation before the first step runs
+- **Security regression coverage**: added focused security tests for shell injection blocking, Telegram auth enforcement, and webhook replay/rate limiting
+
+### Validation
+- **Test suite**: all tests pass after hardening, including the new security coverage (`88 passed`)
+
 ## [0.9.6] — 2026-03
 
 ### Added
