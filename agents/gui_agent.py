@@ -4,10 +4,12 @@ Finds elements via AX Tree and performs clicks / typing.
 """
 
 import logging
+import shlex
 from typing import Optional
 
 from core.config import get_agent_config
 from core.retry import retry_with_backoff
+from core.security import SecurityError, sanitize_command
 from tools.ax_tree import find_button_by_title, get_ax_tree
 from tools.mouse import click_at_center, move, click
 from tools import keyboard
@@ -135,7 +137,14 @@ def execute_step(step) -> dict[str, str]:
         # Handle generic actions - try to execute as shell command for GUI operations
         try:
             import subprocess
-            result = subprocess.run(action, shell=True, capture_output=True, text=True, timeout=30)
+
+            is_safe, reason = sanitize_command(action)
+            if not is_safe:
+                raise SecurityError(reason)
+            parts = shlex.split(action)
+            if not parts:
+                raise SecurityError("Empty GUI action.")
+            result = subprocess.run(parts, shell=False, capture_output=True, text=True, timeout=30)
             return {
                 "success": result.returncode == 0,
                 "result": result.stdout.strip() or result.stderr.strip() or "Command executed",

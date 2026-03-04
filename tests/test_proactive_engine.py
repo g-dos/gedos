@@ -130,6 +130,12 @@ def test_system_watcher_does_not_trigger_below_threshold():
 
 def test_github_watcher_triggers_on_new_issue():
     issue = SimpleNamespace(id=10, number=3, title="Broken build", pull_request=None)
+    initial_repo = SimpleNamespace(
+        full_name="g-dos/gedos",
+        get_issues=lambda **kwargs: [],
+        get_pulls=lambda **kwargs: [],
+        get_workflow_runs=lambda **kwargs: [],
+    )
     repo = SimpleNamespace(
         full_name="g-dos/gedos",
         get_issues=lambda **kwargs: [issue],
@@ -137,6 +143,7 @@ def test_github_watcher_triggers_on_new_issue():
         get_workflow_runs=lambda **kwargs: [],
     )
     with patch("core.watchers.github_watcher.notify") as notify_mock:
+        github_watcher._poll_repo(initial_repo, "123")
         github_watcher._poll_repo(repo, "123")
 
     notify_mock.assert_called_once()

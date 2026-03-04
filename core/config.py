@@ -50,6 +50,8 @@ def read_env_file() -> dict[str, str]:
 
 def write_env_value(key: str, value: str) -> None:
     """Upsert a variable in the local .env file."""
+    key = str(key).strip().replace("\n", "").replace("\r", "")
+    value = str(value).replace("\n", "").replace("\r", "").strip()
     env_path = _env_path()
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []

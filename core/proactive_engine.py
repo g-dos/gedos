@@ -26,6 +26,22 @@ _RECENT_MESSAGES: dict[tuple[str, str], deque[datetime]] = {}
 _LOCK = threading.Lock()
 
 
+def _sanitize_notification_text(message: str) -> str:
+    """Normalize external notification content before user display."""
+    cleaned = []
+    for char in str(message or ""):
+        if char in "\n\t":
+            cleaned.append(" ")
+        elif ord(char) < 32:
+            continue
+        elif char in "`*_[]()":
+            continue
+        else:
+            cleaned.append(char)
+    normalized = " ".join("".join(cleaned).split())
+    return normalized[:500]
+
+
 @dataclass(frozen=True, slots=True)
 class ProactiveEvent:
     """Structured proactive notification payload."""
@@ -116,7 +132,7 @@ def _is_duplicate(user_id: str, message: str, now: datetime) -> bool:
 def notify(user_id: str, message: str, category: str, priority: str) -> bool:
     """Attempt to deliver a proactive notification, respecting cooldown and dedupe."""
     normalized_user = str(user_id).strip()
-    normalized_message = (message or "").strip()
+    normalized_message = _sanitize_notification_text(message)
     if not normalized_user or not normalized_message:
         return False
     if category not in _VALID_CATEGORIES or priority not in _VALID_PRIORITIES:

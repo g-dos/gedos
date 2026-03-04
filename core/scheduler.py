@@ -110,6 +110,7 @@ def start_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
         logger.info("APScheduler started")
+        _register_maintenance_jobs()
         _load_schedules_from_db()
 
 
@@ -132,6 +133,30 @@ def _load_schedules_from_db() -> None:
                 logger.error("Failed to load scheduled task %s: %s", task.id, exc)
     except Exception as exc:
         logger.error("Failed to load schedules from database: %s", exc)
+
+
+def _run_retention_cleanup() -> None:
+    """Run privacy retention cleanup for all known users."""
+    try:
+        from core.memory import cleanup_all_users
+
+        deleted = cleanup_all_users()
+        if deleted:
+            logger.info("Retention cleanup removed %s expired row(s)", deleted)
+    except Exception as exc:
+        logger.error("Retention cleanup failed: %s", exc)
+
+
+def _register_maintenance_jobs() -> None:
+    """Register scheduler maintenance jobs once."""
+    scheduler = get_scheduler("UTC")
+    if scheduler.get_job("gedos_retention_cleanup") is None:
+        scheduler.add_job(
+            _run_retention_cleanup,
+            trigger=CronTrigger(hour=3, minute=0, timezone=UTC),
+            id="gedos_retention_cleanup",
+            replace_existing=True,
+        )
 
 
 def _job_prefix(task_id: int) -> str:
@@ -358,6 +383,8 @@ def parse_schedule_expression(text: str, user_tz: str) -> Optional[dict[str, Any
     interval_match = re.fullmatch(r"every (\d+) (minute|minutes|hour|hours)", lowered)
     if interval_match:
         amount = int(interval_match.group(1))
+        if amount <= 0:
+            return None
         unit = interval_match.group(2)
         minutes = amount * 60 if unit.startswith("hour") else amount
         return {
@@ -371,8 +398,13 @@ def parse_schedule_expression(text: str, user_tz: str) -> Optional[dict[str, Any
         }
 
     if lowered.startswith("in "):
+        relative_match = re.fullmatch(r"in\s+(-?\d+)\s+(minute|minutes|hour|hours)", lowered)
+        if relative_match and int(relative_match.group(1)) <= 0:
+            return None
         run_at, status = _CALENDAR.parseDT(lowered, sourceTime=now_local, tzinfo=tz)
         if status > 0:
+            if run_at <= now_local:
+                return None
             return {
                 "type": "once",
                 "days": None,

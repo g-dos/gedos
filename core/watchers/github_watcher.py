@@ -19,6 +19,7 @@ _SEEN_ISSUES: set[int] = set()
 _SEEN_PULLS: set[int] = set()
 _SEEN_RUNS: dict[tuple[str, int], str] = {}
 _SEEN_REVIEW_REQUESTS: set[tuple[str, int]] = set()
+_INITIALIZED_REPOS: set[str] = set()
 
 
 def _pick_user_id() -> Optional[str]:
@@ -47,21 +48,29 @@ def _watched_repos(client: Github):
 def _poll_repo(repo, user_id: str) -> None:
     """Poll one repository and emit notifications for new activity."""
     full_name = repo.full_name
+    first_seen = full_name not in _INITIALIZED_REPOS
+    if first_seen:
+        _INITIALIZED_REPOS.add(full_name)
     for issue in repo.get_issues(state="open", sort="created", direction="desc")[:10]:
         if issue.pull_request:
             continue
         if issue.id in _SEEN_ISSUES:
             continue
         _SEEN_ISSUES.add(issue.id)
+        if first_seen:
+            continue
         notify(user_id, f"📌 New issue opened in {full_name}: #{issue.number} {issue.title}", "github", "medium")
 
     for pr in repo.get_pulls(state="open", sort="created", direction="desc")[:10]:
         if pr.id not in _SEEN_PULLS:
             _SEEN_PULLS.add(pr.id)
-            notify(user_id, f"🔀 New PR opened in {full_name}: #{pr.number} {pr.title}", "github", "medium")
+            if not first_seen:
+                notify(user_id, f"🔀 New PR opened in {full_name}: #{pr.number} {pr.title}", "github", "medium")
         review_key = (full_name, pr.number)
         if pr.requested_reviewers and review_key not in _SEEN_REVIEW_REQUESTS:
             _SEEN_REVIEW_REQUESTS.add(review_key)
+            if first_seen:
+                continue
             notify(user_id, f"👀 Review requested on {full_name} PR #{pr.number}. Want me to summarize it?", "github", "medium")
 
     try:
@@ -69,6 +78,8 @@ def _poll_repo(repo, user_id: str) -> None:
             key = (full_name, run.id)
             previous = _SEEN_RUNS.get(key)
             _SEEN_RUNS[key] = run.conclusion or ""
+            if first_seen:
+                continue
             if previous is None and run.conclusion == "failure":
                 notify(user_id, f"❌ CI failed in {full_name}: {run.name}", "github", "high")
     except Exception:
