@@ -8,15 +8,14 @@ __version__ = "0.9.8"
 
 import argparse
 import logging
+from typing import Optional
 import sys
 import threading
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
 from rich.traceback import install as install_rich_traceback
 
-from core.config import load_config
+from core.config import has_telegram_token, load_config
 
 console = Console()
 install_rich_traceback(show_locals=False)
@@ -57,56 +56,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _banner(mode: str, config: dict) -> None:
-    """Print a rich startup banner."""
+    """Print the required ASCII banner and startup mode line."""
     llm = (config.get("llm") or {})
-    provider = llm.get("provider", "ollama")
     model = llm.get("model", "llama3.3")
-
-    title = Text()
-    title.append("GEDOS", style="bold cyan")
-    title.append(f"  v{__version__}", style="dim")
-
-    lines = Text()
-    lines.append("Mode    ", style="bold")
-    lines.append(mode.capitalize(), style="green" if mode == "pilot" else "yellow")
-    lines.append("\n")
-    lines.append("LLM     ", style="bold")
-    lines.append(f"{provider} ({model})", style="dim")
-    lines.append("\n")
-    lines.append("Status  ", style="bold")
-    lines.append("● Starting...", style="green")
-
-    console.print(Panel(lines, title=title, border_style="cyan", expand=False))
+    banner = (
+        "__                   __          \n"
+        "\\ \\  ____ ____  ____/ /___  _____\n"
+        " \\ \\/ __ `/ _ \\/ __  / __ \\/ ___/\n"
+        " / / /_/ /  __/ /_/ / /_/ (__  ) \n"
+        "/_/\\__, /\\___/\\__,_/\\____/____/  \n"
+        "  /____/\n"
+    )
+    console.print(banner)
+    mode_label = "CLI" if mode == "cli" else "Telegram"
+    console.print(f"Mode: {mode_label} | LLM: {model} | v{__version__}")
 
 
-def _handle_cli_command(command: str) -> Optional[int]:
-    """Handle lightweight CLI commands without starting the Telegram bot."""
-    normalized = (command or "").strip()
-    if not normalized:
-        return None
-    if not normalized.startswith("/voice"):
-        return None
-
-    from interfaces.i18n import t
-
-    parts = normalized.split(maxsplit=1)
-    action = parts[1].strip().lower() if len(parts) > 1 else ""
-    if action == "on":
-        from tools.voice_output import play_voice_response_locally
-
-        message = t("voice_enabled", "en")
-        console.print(message)
-        play_voice_response_locally(message, "en")
-        return 0
-    if action == "off":
-        console.print(t("voice_disabled", "en"))
-        return 0
-    if action == "status":
-        console.print(t("voice_status_off", "en"))
-        return 0
-
-    console.print(t("usage_voice", "en"))
-    return 1
+def _runtime_mode(args, _config: dict) -> str:
+    """Resolve the startup mode based on flags and configured Telegram token."""
+    if args.mcp:
+        return "mcp"
+    if not has_telegram_token():
+        return "cli"
+    return "telegram"
 
 
 def main() -> int:
@@ -114,9 +86,6 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
     cli_command = " ".join(getattr(args, "command", [])).strip() if hasattr(args, "command") else ""
-    cli_result = _handle_cli_command(cli_command)
-    if cli_result is not None:
-        return cli_result
 
     try:
         config = load_config()
@@ -124,9 +93,8 @@ def main() -> int:
         console.print(f"[red bold]Error:[/] {e}")
         return 1
 
-    if args.mcp:
-        active_mode = "mcp"
-    else:
+    active_mode = _runtime_mode(args, config)
+    if active_mode == "telegram":
         # Validate API keys before starting the Telegram interface
         from core.security import validate_api_keys
         if not validate_api_keys(config):
@@ -137,14 +105,6 @@ def main() -> int:
             config.setdefault("modes", {})["pilot"] = args.mode == "pilot"
             config.setdefault("modes", {})["copilot"] = args.mode == "copilot"
 
-        modes = config.get("modes") or {}
-        if modes.get("copilot"):
-            active_mode = "copilot"
-        elif modes.get("pilot", True):
-            active_mode = "pilot"
-        else:
-            active_mode = "pilot"
-
     level_name = (config.get("logging") or {}).get("level", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(
@@ -152,7 +112,7 @@ def main() -> int:
         level=level,
     )
 
-    if not args.mcp:
+    if active_mode in {"telegram", "cli"}:
         _banner(active_mode, config)
 
     from core.memory_profiler import log_memory_stats
@@ -164,6 +124,10 @@ def main() -> int:
         if args.mcp:
             from core.mcp_server import run_mcp_server
             run_mcp_server()
+        elif active_mode == "cli":
+            from interfaces.cli import run_cli
+
+            run_cli(initial_command=cli_command or None)
         else:
             if args.webhook:
                 from core.github_webhook import get_webhook_status, run_github_webhook_server

@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-from core.config import get_llm_config
+from core.config import get_llm_config, load_gedos_profile
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,19 @@ def complete(
     base_system = SYSTEM_PROMPT.strip()
     if system:
         base_system = f"{base_system}\n\nAdditional task instructions:\n{system.strip()}"
+    profile = load_gedos_profile()
+    profile_name = (profile.get("name") or "").strip()
+    refer_as = (profile.get("refer_as") or "").strip()
+    response_style = (profile.get("response_style") or "").strip()
+    if profile_name:
+        base_system = f"{base_system}\n\nUser name: {profile_name}"
+    if refer_as:
+        base_system = f"{base_system}\nRefer to the user as: {refer_as}"
+    if response_style and response_style != "auto":
+        base_system = f"{base_system}\nPreferred response style: {response_style}"
+    profile_context = (profile.get("context") or "").strip()
+    if profile_context:
+        base_system = f"{base_system}\n\nUser context from GEDOS.md:\n{profile_context}"
     if lang_instruction:
         base_system = base_system + lang_instruction
     system = base_system
