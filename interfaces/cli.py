@@ -19,13 +19,28 @@ from core.config import (
     write_env_value,
 )
 from core.llm import complete
-from core.memory import add_context, get_owner, get_recent_context, get_recent_tasks, init_db
+from core.memory import (
+    add_context,
+    delete_all_patterns,
+    delete_pattern,
+    get_owner,
+    get_patterns,
+    get_permission_level,
+    get_recent_context,
+    get_recent_tasks,
+    init_db,
+    set_permission_level,
+)
 from core.orchestrator import clear_stop, request_stop, run_task_with_langgraph
 from tools.voice_output import play_voice_response_locally
 
 logger = logging.getLogger(__name__)
 
 CLI_USER_ID = "cli"
+_CLI_TASK_STATUS = "idle"
+_CLI_CURRENT_TASK = ""
+_CLI_COPILOT_ACTIVE = False
+_CLI_COPILOT_SENSITIVITY = "medium"
 
 
 def _latest_cli_profile() -> dict[str, str]:
@@ -230,21 +245,70 @@ def _run_onboarding() -> None:
         user_id=CLI_USER_ID,
     )
     update_config({"security": {"strict_shell": strict_shell}})
+    set_permission_level(CLI_USER_ID, permission_level)
     print(f"Welcome, {name}. CLI Mode is ready.")
 
 
 def _help_text() -> str:
-    """Return CLI help text."""
+    """Return the exact CLI help output requested for demo mode."""
+    from gedos import __version__
+
+    profile = _latest_cli_profile()
+    name = profile.get("name") or "there"
     return (
-        "Commands:\n"
-        "/help - show this help\n"
-        "/task <description> - run a task\n"
-        "/ask <question> - ask the LLM\n"
-        "/web <url> - open a web page\n"
-        "/memory - recent task history\n"
-        "/voice on|off|status - CLI voice output\n"
-        "/stop - request stop\n"
-        "/exit - quit"
+        "╭─────────────────────────────────────────────────────╮\n"
+        f"│  Gedos v{__version__} — CLI Mode                        │\n"
+        f"│  Hey {name}".ljust(54) + "│\n"
+        "╰─────────────────────────────────────────────────────╯\n"
+        "\n"
+        "TASKS\n"
+        "  /task <description>     Run any task\n"
+        "  /status                 Current task status\n"
+        "  /stop                   Cancel running task\n"
+        "\n"
+        "WEB\n"
+        "  /web <url>              Browse and summarize a URL\n"
+        "\n"
+        "LLM\n"
+        "  /ask <question>         Ask your LLM directly\n"
+        "\n"
+        "SCHEDULE\n"
+        "  /schedule <when> <task> Schedule a recurring task\n"
+        "  /schedules              List active schedules\n"
+        "  /unschedule <id>        Remove a schedule\n"
+        "\n"
+        "MEMORY\n"
+        "  /memory                 Recent task history\n"
+        "  /patterns               Learned behavioral patterns\n"
+        "  /forget <id|all>        Remove learned patterns\n"
+        "\n"
+        "COPILOT\n"
+        "  /copilot on|off         Toggle proactive suggestions\n"
+        "  /copilot status         Status and sensitivity\n"
+        "  /copilot sensitivity    high | medium | low\n"
+        "\n"
+        "GITHUB\n"
+        "  /github status          Webhook server status\n"
+        "  /github connect         Setup instructions\n"
+        "\n"
+        "VOICE\n"
+        "  /voice on|off|status    Toggle voice responses\n"
+        "\n"
+        "SYSTEM\n"
+        "  /permissions            View and edit permission level\n"
+        "  /config                 Open GEDOS.md in editor\n"
+        "  /ping                   Health check\n"
+        "  /clear                  Clear screen\n"
+        "  /exit                   Quit Gedos\n"
+        "\n"
+        "MCP\n"
+        "  Run: gedos --mcp\n"
+        "  Exposes your Mac to Claude, Cursor, and any MCP client.\n"
+        "  See: docs/mcp.md\n"
+        "\n"
+        "PILOT MODE\n"
+        "  Add TELEGRAM_BOT_TOKEN to ~/.gedos/.env\n"
+        "  Restart Gedos to enable autonomous remote execution."
     )
 
 
@@ -266,8 +330,71 @@ def _format_web_result(url: str) -> str:
     return "\n".join(parts)
 
 
+def _permission_status_text() -> str:
+    """Return the current CLI permission level and explanation."""
+    level = get_permission_level(CLI_USER_ID) or ("default" if load_gedos_profile().get("level", "default") == "default" else "full_access")
+    if level == "full_access":
+        return "Permission level: Full Access\nDestructive commands run without approval."
+    return "Permission level: Default\nDestructive commands require approval."
+
+
+def _set_permission(level: str) -> str:
+    """Persist a permission level change to config and memory."""
+    normalized = "full_access" if level in {"full", "full_access"} else "default"
+    strict_shell = normalized != "full_access"
+    update_config({"security": {"strict_shell": strict_shell}})
+    set_permission_level(CLI_USER_ID, normalized)
+    return "Permission level set to Full Access." if normalized == "full_access" else "Permission level set to Default."
+
+
+def _format_patterns() -> str:
+    """Return a CLI rendering of learned patterns."""
+    patterns = get_patterns(CLI_USER_ID)
+    if not patterns:
+        return "No patterns learned yet. Keep using Gedos!"
+    lines = [f"Learned patterns ({len(patterns)}):"]
+    for index, pattern in enumerate(patterns, start=1):
+        confidence = int(round((pattern.confidence or 0.0) * 100))
+        lines.append(f"{index}. [{confidence}%] {pattern.trigger} -> {pattern.action}")
+    return "\n".join(lines)
+
+
+def _handle_schedule_command(text: str) -> str:
+    """CLI wrappers for schedule commands."""
+    from core.scheduler import create_schedule, get_scheduled_task_by_id, list_user_schedules, parse_schedule_command, remove_schedule, start_scheduler
+
+    start_scheduler()
+    if text.startswith("/schedule "):
+        schedule_data = parse_schedule_command(text)
+        if not schedule_data:
+            return "Invalid schedule format."
+        task = create_schedule(
+            user_id=CLI_USER_ID,
+            frequency=schedule_data["frequency"],
+            schedule_time=schedule_data["time"],
+            task_description=schedule_data["task"],
+            day_of_week=schedule_data.get("day_of_week"),
+            schedule_date=schedule_data.get("schedule_date"),
+        )
+        return f"Scheduled #{task.id}: {task.task_description}"
+    if text == "/schedules":
+        tasks = list_user_schedules(CLI_USER_ID)
+        if not tasks:
+            return "No active schedules."
+        return "\n".join(f"#{task.id} {task.frequency} {task.schedule_time} {task.task_description}" for task in tasks)
+    parts = text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return "Usage: /unschedule <id>"
+    task = get_scheduled_task_by_id(int(parts[1]))
+    if not task or task.user_id != CLI_USER_ID:
+        return f"Schedule #{parts[1]} not found."
+    removed = remove_schedule(task.id)
+    return f"Removed schedule #{task.id}: {task.task_description}" if removed else f"Failed to remove schedule #{task.id}"
+
+
 def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
     """Execute one CLI command and return (response, updated_voice_enabled)."""
+    global _CLI_TASK_STATUS, _CLI_CURRENT_TASK, _CLI_COPILOT_ACTIVE, _CLI_COPILOT_SENSITIVITY
     text = (command or "").strip()
     if not text:
         return ("", voice_enabled)
@@ -277,7 +404,29 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         raise EOFError
     if text == "/stop":
         request_stop()
+        _CLI_TASK_STATUS = "stopped"
         return ("⛔ Stopped.", voice_enabled)
+    if text == "/status":
+        if _CLI_TASK_STATUS == "idle" or not _CLI_CURRENT_TASK:
+            return ("No task running.", voice_enabled)
+        return (f"Status: {_CLI_TASK_STATUS}\nTask: {_CLI_CURRENT_TASK}", voice_enabled)
+    if text == "/ping":
+        return ("pong\nMCP: available (run with --mcp)", voice_enabled)
+    if text == "/clear":
+        subprocess.run(["clear"], check=False)
+        return ("", voice_enabled)
+    if text == "/config":
+        subprocess.run(["open", str(get_gedos_md_path())], check=False)
+        return (f"Opened {get_gedos_md_path()}", voice_enabled)
+    if text == "/permissions":
+        return (_permission_status_text(), voice_enabled)
+    if text == "/permissions default":
+        return (_set_permission("default"), voice_enabled)
+    if text == "/permissions full":
+        confirmation = input("Full Access is high risk. Type FULL to confirm > ").strip()
+        if confirmation.upper() != "FULL":
+            return ("Permission change cancelled.", voice_enabled)
+        return (_set_permission("full_access"), voice_enabled)
     if text == "/voice on":
         play_voice_response_locally("Voice mode enabled. I'll respond by voice from now on.", "en")
         return ("Voice mode enabled. I'll respond by voice from now on.", True)
@@ -293,6 +442,61 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         for task in tasks:
             lines.append(f"- [{task.status}] {task.description[:80]}")
         return ("\n".join(lines), voice_enabled)
+    if text == "/patterns":
+        return (_format_patterns(), voice_enabled)
+    if text.startswith("/forget "):
+        arg = text.split(maxsplit=1)[1].strip().lower()
+        if arg == "all":
+            delete_all_patterns(CLI_USER_ID)
+            return ("All learned patterns cleared.", voice_enabled)
+        patterns = get_patterns(CLI_USER_ID)
+        if not arg.isdigit():
+            return ("Usage: /forget <id|all>", voice_enabled)
+        index = int(arg)
+        if index < 1 or index > len(patterns):
+            return (f"Pattern #{index} not found.", voice_enabled)
+        removed = delete_pattern(patterns[index - 1].id, CLI_USER_ID)
+        return (f"Pattern #{index} removed." if removed else f"Pattern #{index} not found.", voice_enabled)
+    if text.startswith("/copilot "):
+        lower = text.lower()
+        if lower == "/copilot on":
+            _CLI_COPILOT_ACTIVE = True
+            return ("Copilot Mode on. I'll monitor context and suggest when relevant.", voice_enabled)
+        if lower == "/copilot off":
+            _CLI_COPILOT_ACTIVE = False
+            return ("Copilot Mode off.", voice_enabled)
+        if lower == "/copilot status":
+            active = "yes" if _CLI_COPILOT_ACTIVE else "no"
+            return (f"Copilot status\nActive: {active}\nSensitivity: {_CLI_COPILOT_SENSITIVITY}\nLast suggestion: never", voice_enabled)
+        if lower.startswith("/copilot sensitivity "):
+            requested = lower.split("/copilot sensitivity ", 1)[1].strip()
+            if requested in {"high", "medium", "low"}:
+                _CLI_COPILOT_SENSITIVITY = requested
+                return (f"Copilot sensitivity set to {requested}.", voice_enabled)
+            return ("Usage: /copilot sensitivity high|medium|low", voice_enabled)
+    if text.startswith("/github "):
+        from core.github_webhook import get_webhook_status
+
+        status = get_webhook_status()
+        lower = text.lower()
+        if lower == "/github status":
+            if status["running"]:
+                return (f"GitHub webhook: running on port {status['port']}", voice_enabled)
+            return (f"GitHub webhook: stopped (configured port {status['port']})", voice_enabled)
+        if lower == "/github connect":
+            return (
+                "Connect your repo in GitHub:\n"
+                "1. Settings -> Webhooks -> Add webhook\n"
+                f"2. Payload URL: http://your-mac-ip:{status['port']}/webhook\n"
+                "3. Content type: application/json\n"
+                "4. Events: Workflow runs\n"
+                "5. Set the same GITHUB_WEBHOOK_SECRET locally\n"
+                f"6. If needed, expose port {status['port']} with ngrok\n\n"
+                "Full guide: docs/github-webhook.md",
+                voice_enabled,
+            )
+    if text.startswith("/schedule ") or text in {"/schedules"} or text.startswith("/unschedule "):
+        return (_handle_schedule_command(text), voice_enabled)
     if text.startswith("/ask "):
         return (complete(text[5:].strip(), language="en"), voice_enabled)
     if text.startswith("/web "):
@@ -300,12 +504,15 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
 
     task = text[6:].strip() if text.startswith("/task ") else text
     clear_stop()
+    _CLI_TASK_STATUS = "running"
+    _CLI_CURRENT_TASK = task
     result = run_task_with_langgraph(
         task,
         language="en",
         user_id=CLI_USER_ID,
         context={"time": datetime.utcnow()},
     )
+    _CLI_TASK_STATUS = "idle"
     return (result.get("result") or "No result.", voice_enabled)
 
 

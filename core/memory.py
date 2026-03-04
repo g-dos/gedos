@@ -403,6 +403,26 @@ def set_user_language(user_id: str, language: str, session: Optional[Session] = 
     return add_context("user_language", {"user_id": str(user_id), "language": language}, session=session, user_id=user_id)
 
 
+def get_permission_level(user_id: str, session: Optional[Session] = None) -> Optional[str]:
+    """Get stored permission level for a user. Returns None if not set."""
+    entries = get_recent_context(type_name="permission_level", limit=50, session=session)
+    for entry in entries:
+        if entry.data.get("user_id") == str(user_id):
+            return entry.data.get("level")
+    return None
+
+
+def set_permission_level(user_id: str, level: str, session: Optional[Session] = None) -> Context:
+    """Store permission level preference for a user."""
+    normalized = "full_access" if str(level).strip().lower() in {"full", "full_access"} else "default"
+    return add_context(
+        "permission_level",
+        {"user_id": str(user_id), "level": normalized},
+        session=session,
+        user_id=user_id,
+    )
+
+
 def get_voice_output(user_id: str, session: Optional[Session] = None) -> bool:
     """Return whether voice output is enabled for a user."""
     own_session = session is None

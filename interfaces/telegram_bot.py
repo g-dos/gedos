@@ -9,6 +9,7 @@ import logging
 import secrets
 from typing import Optional
 from collections import defaultdict
+from time import perf_counter
 from time import time
 
 from telegram import Update
@@ -21,7 +22,7 @@ from telegram.ext import (
     filters,
 )
 
-from core.config import get_telegram_token, pilot_enabled, load_config
+from core.config import get_gedos_md_path, get_telegram_token, pilot_enabled, load_config, update_config
 from core.copilot_context import analyze_context
 from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
@@ -30,6 +31,7 @@ from core.memory import (
     add_task as memory_add_task,
     delete_pattern,
     delete_all_patterns,
+    get_permission_level,
     get_voice_output,
     get_patterns,
     get_recent_tasks,
@@ -39,6 +41,7 @@ from core.memory import (
     get_user_language,
     list_allowed_chats,
     remove_allowed_chat,
+    set_permission_level,
     set_voice_output,
     set_owner,
     update_pattern_preferences,
@@ -87,6 +90,12 @@ _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
     "node ", "npm ", "python", "python3", "cd ", "head ", "tail ", "wc ",
 )
+_STEP_ICONS = {
+    "terminal": "🖥️",
+    "web": "🌐",
+    "gui": "🪟",
+    "llm": "🧠",
+}
 
 
 def _looks_like_shell_command(payload: str) -> bool:
@@ -281,6 +290,38 @@ def _voice_task_summary(text: str, lang: str) -> str:
     return f"{prefix} {safe}"
 
 
+def _permission_status_message(user_id: str, lang: str) -> str:
+    """Return the current permission level message."""
+    level = get_permission_level(str(user_id))
+    if level is None:
+        level = "default" if (load_config().get("security") or {}).get("strict_shell", True) else "full_access"
+    return t("permissions_status_full", lang) if level == "full_access" else t("permissions_status_default", lang)
+
+
+def _set_permission_preference(user_id: str, level: str) -> None:
+    """Persist permission level in config and user context."""
+    normalized = "full_access" if str(level).strip().lower() in {"full", "full_access"} else "default"
+    update_config({"security": {"strict_shell": normalized != "full_access"}})
+    set_permission_level(str(user_id), normalized)
+
+
+def _format_demo_plan(plan) -> str:
+    """Render the polished dry-run plan display."""
+    lines = [f"📋 Task plan ({len(plan.steps)} steps):", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for index, step in enumerate(plan.steps, start=1):
+        icon = _STEP_ICONS.get(step.agent, "•")
+        lines.append(f"{index}. {icon}  {step.agent:<8} {step.action}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("[▶️ Run] [❌ Cancel]")
+    return "\n".join(lines)
+
+
+def _append_progress_line(progress_lines: list[str], line: str) -> str:
+    """Append one timeline line and return the full rendered progress text."""
+    progress_lines.append(line)
+    return "\n".join(progress_lines)
+
+
 async def _maybe_send_voice_response(
     context: Optional[ContextTypes.DEFAULT_TYPE],
     chat_id: Optional[int],
@@ -408,20 +449,31 @@ def _learn_patterns_for_task(task: str, chat_id: Optional[int], context: Optiona
         return []
 
 
-async def _execute_step_with_recovery(step, step_num: int, steps_count: int, progress_msg, uid: Optional[int], update: Update, lang: str = "en") -> dict:
+async def _execute_step_with_recovery(
+    step,
+    step_num: int,
+    steps_count: int,
+    progress_msg,
+    uid: Optional[int],
+    update: Update,
+    lang: str = "en",
+    progress_lines: Optional[list[str]] = None,
+) -> dict:
     """
     Execute a step with retry logic and user decision on failure.
     """
     import asyncio
     from core.orchestrator import _execute_single_step
     
-    await progress_msg.edit_text(t("step_in_progress", lang, n=step_num, t=steps_count, step=step.action[:50] + "..."))
     result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
 
     if result.get('success', False):
         return result
 
-    await progress_msg.edit_text(t("step_retry", lang, n=step_num, t=steps_count))
+    if progress_lines is not None:
+        await progress_msg.edit_text(_append_progress_line(progress_lines, f"⚠️ Retrying step {step_num}/{steps_count}..."))
+    else:
+        await progress_msg.edit_text(t("step_retry", lang, n=step_num, t=steps_count))
 
     retry_result = _execute_single_step(step.agent, step.action, step_obj=step, language=lang)
     
@@ -432,7 +484,11 @@ async def _execute_step_with_recovery(step, step_num: int, steps_count: int, pro
     retry_error = retry_result.get('result', t("unknown_error", lang))[:100]
     decision_message = t("step_failed_continue", lang, n=step_num, err=retry_error)
     
-    await progress_msg.edit_text(decision_message)
+    if progress_lines is not None:
+        await progress_msg.edit_text(_append_progress_line(progress_lines, f"❌ Step {step_num}/{steps_count}: {step.action} — {retry_error}"))
+        await progress_msg.edit_text("\n".join(progress_lines + [decision_message]))
+    else:
+        await progress_msg.edit_text(decision_message)
     
     # Set up user decision awaiting
     decision_future = asyncio.Future()
@@ -481,11 +537,11 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                 return run_single_step_task(task, language=lang)
 
             steps_count = len(plan.steps)
-            await progress_msg.edit_text(t("planning_complete", lang, n=steps_count))
-            
             results = []
             overall_success = True
             agents_used = []
+            progress_lines: list[str] = []
+            start_time = perf_counter()
             
             # Execute each step with progress updates
             for i, step in enumerate(plan.steps):
@@ -497,11 +553,12 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                 step_num = i + 1
                 
                 # Update progress before step
-                step_desc = step.action[:50] + ("..." if len(step.action) > 50 else "")
-                await progress_msg.edit_text(t("step_in_progress", lang, n=step_num, t=steps_count, step=step_desc))
+                await progress_msg.edit_text(
+                    _append_progress_line(progress_lines, f"⚙️ Running step {step_num}/{steps_count}...")
+                )
                 
                 result = await _execute_step_with_recovery(
-                    step, step_num, steps_count, progress_msg, uid, update, lang
+                    step, step_num, steps_count, progress_msg, uid, update, lang, progress_lines
                 )
                 agents_used.append(result.get('agent_used', step.agent))
                 
@@ -513,10 +570,21 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
                 # Update progress after step
                 if result.get('success', False):
                     step_result = result.get('result', t("generic_completed", lang))[:100]
-                    await progress_msg.edit_text(t("step_success", lang, n=step_num, t=steps_count, result=step_result))
+                    await progress_msg.edit_text(
+                        _append_progress_line(
+                            progress_lines,
+                            f"✅ Step {step_num}/{steps_count}: {step.action} — {step_result}",
+                        )
+                    )
                     results.append(t("task_summary_success", lang, n=step_num, result=step_result))
                 else:
                     step_error = result.get('result', t("unknown_error", lang))[:100]
+                    await progress_msg.edit_text(
+                        _append_progress_line(
+                            progress_lines,
+                            f"❌ Step {step_num}/{steps_count}: {step.action} — {step_error}",
+                        )
+                    )
                     results.append(t("task_summary_failure", lang, n=step_num, result=step_error))
                     overall_success = False
             
@@ -531,8 +599,10 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             
             if len(summary) > 4000:
                 summary = summary[:4000] + t("truncated_suffix", lang)
-                
-            await progress_msg.edit_text(summary)
+
+            elapsed = perf_counter() - start_time
+            final_progress = "\n".join(progress_lines + [f"✓ Done in {elapsed:.1f}s"])
+            await progress_msg.edit_text(final_progress)
             
             # Store in memory
             if uid is not None:
@@ -648,6 +718,46 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(t("usage_voice", lang))
 
 
+async def cmd_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage permission level in Telegram mode."""
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
+        return
+    text = update.message.text.strip()
+    lang = _user_lang(update, text)
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+
+    parts = text.split()
+    if len(parts) == 1:
+        await update.message.reply_text(_permission_status_message(str(chat_id), lang))
+        return
+
+    action = parts[1].lower()
+    if action == "default":
+        _set_permission_preference(str(chat_id), "default")
+        await update.message.reply_text(t("permissions_set_default", lang))
+        return
+    if action == "full":
+        if len(parts) < 3 or parts[2].lower() != "confirm":
+            await update.message.reply_text(t("permissions_confirm_full", lang))
+            return
+        _set_permission_preference(str(chat_id), "full_access")
+        await update.message.reply_text(t("permissions_set_full", lang))
+        return
+
+    await update.message.reply_text(t("usage_permissions", lang))
+
+
+async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tell the user where to edit GEDOS.md."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update)
+    await update.message.reply_text(t("config_open_instructions", lang, path=str(get_gedos_md_path())))
+
+
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _current_task, _task_status, _task_cancelled
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
@@ -748,14 +858,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not plan.is_multi_step or not plan.steps:
             is_multi_step = False
         else:
-            progress_msg = await update.message.reply_text(
-                t(
-                    "dry_run_plan",
-                    lang,
-                    n=len(plan.steps),
-                    steps="\n".join(f"{i + 1}. {step.agent}: {step.action}" for i, step in enumerate(plan.steps)),
-                )
-            )
+            progress_msg = await update.message.reply_text(_format_demo_plan(plan))
             if not await _confirm_plan(uid, progress_msg, lang):
                 _task_status = "idle"
                 await progress_msg.edit_text(t("dry_run_cancelled", lang))
@@ -1578,6 +1681,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("voice", cmd_voice))
+    app.add_handler(CommandHandler("permissions", cmd_permissions))
+    app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("owner", cmd_owner))
