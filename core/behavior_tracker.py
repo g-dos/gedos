@@ -129,7 +129,7 @@ def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -
         newly_confirmed.append(pattern)
         log_action(
             "pattern_detected",
-            {"type": "time_based", "trigger": pattern.trigger, "action": pattern.action},
+            {"type": "time_based", "trigger": getattr(pattern, "trigger", f"time:{weekday}@{hour}"), "action": getattr(pattern, "action", action)},
             str(user_id),
             "confirmed",
         )
@@ -141,7 +141,7 @@ def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -
             newly_confirmed.append(pattern)
             log_action(
                 "pattern_detected",
-                {"type": "context_based", "trigger": pattern.trigger, "action": pattern.action},
+                {"type": "context_based", "trigger": getattr(pattern, "trigger", f"app:{current_app.lower()}"), "action": getattr(pattern, "action", action)},
                 str(user_id),
                 "confirmed",
             )
@@ -153,7 +153,7 @@ def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -
             newly_confirmed.append(pattern)
             log_action(
                 "pattern_detected",
-                {"type": "workflow_based", "trigger": pattern.trigger, "action": pattern.action},
+                {"type": "workflow_based", "trigger": getattr(pattern, "trigger", f"after:{preceding_task}"), "action": getattr(pattern, "action", action)},
                 str(user_id),
                 "confirmed",
             )
