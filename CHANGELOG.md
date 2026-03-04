@@ -9,7 +9,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
-## [0.9.13] — 2026-03-XX
+## [0.9.13] — 2026-03-04
 ### Added
 - GitHub Actions CI workflow with coverage reporting
 - `/checklist` command: visual setup validation
