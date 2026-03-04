@@ -40,7 +40,7 @@ def test_api_key_saved_to_env_when_provided():
 
 
 def test_name_and_refer_as_saved_to_user_context():
-    inputs = ["Santiago", "2", "Master Santiago", "1", "", "n"]
+    inputs = ["Santiago", "", "2", "Master Santiago", "1", "", "n"]
 
     with patch("interfaces.cli._ensure_llm_available"):
         with patch("builtins.input", side_effect=inputs):
@@ -59,7 +59,7 @@ def test_name_and_refer_as_saved_to_user_context():
 
 
 def test_permission_level_saved_correctly():
-    inputs = ["Santiago", "1", "3", "", "n"]
+    inputs = ["Santiago", "", "1", "3", "", "n"]
 
     with patch("interfaces.cli._ensure_llm_available"):
         with patch("builtins.input", side_effect=inputs):
@@ -75,7 +75,7 @@ def test_permission_level_saved_correctly():
 
 
 def test_telegram_token_saved_to_env_when_provided():
-    inputs = ["Santiago", "1", "1", "telegram-token", "n"]
+    inputs = ["Santiago", "", "1", "1", "telegram-token", "n"]
 
     with patch("interfaces.cli._ensure_llm_available"):
         with patch("builtins.input", side_effect=inputs):

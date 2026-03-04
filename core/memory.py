@@ -377,11 +377,22 @@ def add_context(
 
 def get_user_timezone(user_id: str, session: Optional[Session] = None) -> Optional[str]:
     """Get stored timezone for a user. Returns None if not set."""
-    entries = get_recent_context(type_name="user_timezone", limit=50, session=session)
-    for e in entries:
-        if e.data.get("user_id") == str(user_id):
-            return e.data.get("timezone")
-    return None
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = (
+            session.query(Context)
+            .filter(Context.type == "user_timezone", Context.user_id == str(user_id))
+            .order_by(Context.timestamp.desc())
+            .first()
+        )
+        if entry:
+            return (entry.data or {}).get("timezone")
+        return None
+    finally:
+        if own_session:
+            session.close()
 
 
 def set_user_timezone(user_id: str, timezone: str, session: Optional[Session] = None) -> Context:
@@ -391,11 +402,22 @@ def set_user_timezone(user_id: str, timezone: str, session: Optional[Session] = 
 
 def get_user_language(user_id: str, session: Optional[Session] = None) -> Optional[str]:
     """Get cached language for a user. Returns None if not set."""
-    entries = get_recent_context(type_name="user_language", limit=50, session=session)
-    for e in entries:
-        if e.data.get("user_id") == str(user_id):
-            return e.data.get("language")
-    return None
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = (
+            session.query(Context)
+            .filter(Context.type == "user_language", Context.user_id == str(user_id))
+            .order_by(Context.timestamp.desc())
+            .first()
+        )
+        if entry:
+            return (entry.data or {}).get("language")
+        return None
+    finally:
+        if own_session:
+            session.close()
 
 
 def set_user_language(user_id: str, language: str, session: Optional[Session] = None) -> Context:
@@ -405,11 +427,22 @@ def set_user_language(user_id: str, language: str, session: Optional[Session] = 
 
 def get_permission_level(user_id: str, session: Optional[Session] = None) -> Optional[str]:
     """Get stored permission level for a user. Returns None if not set."""
-    entries = get_recent_context(type_name="permission_level", limit=50, session=session)
-    for entry in entries:
-        if entry.data.get("user_id") == str(user_id):
-            return entry.data.get("level")
-    return None
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = (
+            session.query(Context)
+            .filter(Context.type == "permission_level", Context.user_id == str(user_id))
+            .order_by(Context.timestamp.desc())
+            .first()
+        )
+        if entry:
+            return (entry.data or {}).get("level")
+        return None
+    finally:
+        if own_session:
+            session.close()
 
 
 def set_permission_level(user_id: str, level: str, session: Optional[Session] = None) -> Context:
@@ -431,13 +464,29 @@ def set_permission_level(user_id: str, level: str, session: Optional[Session] = 
 
 def get_custom_permissions(user_id: str, session: Optional[Session] = None) -> dict[str, str]:
     """Return stored custom permission rules for a user."""
-    entries = get_recent_context(type_name="custom_permissions", limit=50, session=session)
-    for entry in entries:
-        if entry.data.get("user_id") == str(user_id):
-            stored = entry.data.get("permissions") or {}
-            if isinstance(stored, dict):
-                return {str(key): str(value) for key, value in stored.items()}
-    return {}
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = (
+            session.query(Context)
+            .filter(Context.type == "custom_permissions", Context.user_id == str(user_id))
+            .order_by(Context.timestamp.desc())
+            .first()
+        )
+        if not entry:
+            return {}
+        stored = (entry.data or {}).get("permissions") or {}
+        if isinstance(stored, dict):
+            normalized: dict[str, str] = {}
+            for key, value in stored.items():
+                action = str(value).strip().lower()
+                normalized[str(key)] = action if action in {"allow", "confirm", "block"} else "confirm"
+            return normalized
+        return {}
+    finally:
+        if own_session:
+            session.close()
 
 
 def set_custom_permissions(user_id: str, permissions: dict[str, str], session: Optional[Session] = None) -> Context:
@@ -715,7 +764,22 @@ def prune_old_conversations(retention_days: int = 30, session: Optional[Session]
 
 
 def delete_all_patterns(user_id: str, session: Optional[Session] = None) -> int:
-    """Delete all user-scoped learned data and return the number of deleted rows."""
+    """Delete all learned patterns for a user and return the number of deleted rows."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        user_key = str(user_id)
+        deleted = session.query(Pattern).filter(Pattern.user_id == user_key).delete()
+        session.commit()
+        return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def delete_user_data(user_id: str, session: Optional[Session] = None) -> int:
+    """Delete all persisted data for one user/chat and return the number of deleted rows."""
     own_session = session is None
     if own_session:
         session = get_session()
@@ -725,13 +789,202 @@ def delete_all_patterns(user_id: str, session: Optional[Session] = None) -> int:
         deleted += session.query(Conversation).filter(Conversation.user_id == user_key).delete()
         deleted += session.query(Task).filter(Task.user_id == user_key).delete()
         deleted += session.query(Pattern).filter(Pattern.user_id == user_key).delete()
+        deleted += session.query(ScheduledTask).filter(ScheduledTask.user_id == user_key).delete()
+        owner = session.query(Owner).filter(Owner.chat_id == user_key).first()
+        if owner is not None:
+            session.delete(owner)
+            deleted += 1
+        allowed = session.query(AllowedChat).filter(AllowedChat.chat_id == user_key).first()
+        if allowed is not None:
+            session.delete(allowed)
+            deleted += 1
         for entry in session.query(Context).all():
             data = entry.data or {}
-            if data.get("user_id") == user_key:
+            if entry.user_id == user_key or data.get("user_id") == user_key:
                 session.delete(entry)
                 deleted += 1
         session.commit()
         return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def cleanup_old_data(
+    user_id: str,
+    retention_days: Optional[int] = None,
+    session: Optional[Session] = None,
+) -> int:
+    """Delete expired user-scoped history rows based on privacy retention config."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        if retention_days is None:
+            try:
+                from core.config import load_config
+
+                privacy_cfg = load_config().get("privacy") or {}
+                retention_days = int(privacy_cfg.get("task_history_days", 90))
+            except Exception:
+                retention_days = 90
+        retention_days = max(int(retention_days), 1)
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        user_key = str(user_id)
+        deleted = 0
+        deleted += session.query(Task).filter(Task.user_id == user_key, Task.created_at < cutoff).delete()
+        deleted += session.query(Conversation).filter(Conversation.user_id == user_key, Conversation.timestamp < cutoff).delete()
+        session.commit()
+        return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def cleanup_all_users(retention_days: Optional[int] = None, session: Optional[Session] = None) -> int:
+    """Apply retention cleanup to every known user_id in conversations and tasks."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        user_ids: set[str] = set()
+        for (value,) in session.query(Conversation.user_id).filter(Conversation.user_id.is_not(None)).distinct().all():
+            user_ids.add(str(value))
+        for (value,) in session.query(Task.user_id).filter(Task.user_id.is_not(None)).distinct().all():
+            user_ids.add(str(value))
+        deleted = 0
+        for user_id in user_ids:
+            deleted += cleanup_old_data(user_id, retention_days=retention_days, session=session)
+        return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def export_user_data(user_id: str, session: Optional[Session] = None) -> dict[str, Any]:
+    """Return a JSON-serializable export of all persisted data for one user."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        user_key = str(user_id)
+
+        conversations = list(
+            session.query(Conversation)
+            .filter(Conversation.user_id == user_key)
+            .order_by(Conversation.timestamp.asc())
+            .all()
+        )
+        tasks = list(
+            session.query(Task)
+            .filter(Task.user_id == user_key)
+            .order_by(Task.created_at.asc())
+            .all()
+        )
+        patterns = list(
+            session.query(Pattern)
+            .filter(Pattern.user_id == user_key)
+            .order_by(Pattern.confidence.desc(), Pattern.last_seen.desc())
+            .all()
+        )
+        schedules = list(
+            session.query(ScheduledTask)
+            .filter(ScheduledTask.user_id == user_key)
+            .order_by(ScheduledTask.created_at.asc())
+            .all()
+        )
+        context_entries = list(
+            session.query(Context)
+            .filter(Context.user_id == user_key)
+            .order_by(Context.timestamp.asc())
+            .all()
+        )
+
+        profile_name = ""
+        refer_as = ""
+        for entry in reversed(context_entries):
+            data = entry.data or {}
+            if data.get("user_id") != user_key:
+                continue
+            if entry.type == "cli_profile":
+                profile_name = str(data.get("name") or profile_name)
+                refer_as = str(data.get("refer_as") or refer_as)
+                break
+
+        if user_key == "cli":
+            try:
+                from core.config import load_gedos_profile
+
+                profile = load_gedos_profile()
+                profile_name = str(profile.get("name") or profile_name)
+                refer_as = str(profile.get("refer_as") or refer_as)
+            except Exception:
+                pass
+
+        return {
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "user": {
+                "user_id": user_key,
+                "name": profile_name,
+                "refer_as": refer_as,
+                "timezone": get_user_timezone(user_key, session=session),
+                "permissions": get_permission_level(user_key, session=session) or "default",
+            },
+            "task_history": [
+                {
+                    "id": task.id,
+                    "description": task.description,
+                    "status": task.status,
+                    "agent_used": task.agent_used,
+                    "result": task.result,
+                    "created_at": task.created_at.isoformat() + "Z",
+                }
+                for task in tasks
+            ],
+            "patterns": [
+                {
+                    "id": pattern.id,
+                    "type": pattern.type,
+                    "trigger": pattern.trigger,
+                    "action": pattern.action,
+                    "occurrences": pattern.occurrences,
+                    "last_seen": pattern.last_seen.isoformat() + "Z",
+                    "confidence": pattern.confidence,
+                    "active": pattern.active,
+                    "suppressed": pattern.suppressed,
+                    "automated": pattern.automated,
+                }
+                for pattern in patterns
+            ],
+            "schedules": [
+                {
+                    "id": task.id,
+                    "task_description": task.task_description,
+                    "frequency": task.frequency,
+                    "schedule_time": task.schedule_time,
+                    "schedule_date": task.schedule_date,
+                    "day_of_week": task.day_of_week,
+                    "is_active": task.is_active,
+                    "created_at": task.created_at.isoformat() + "Z",
+                    "last_run": task.last_run.isoformat() + "Z" if task.last_run else None,
+                }
+                for task in schedules
+            ],
+            "preferences": {
+                "custom_permissions": get_custom_permissions(user_key, session=session),
+                "voice_output_enabled": get_voice_output(user_key, session=session),
+                "language": get_user_language(user_key, session=session),
+            },
+            "conversations": [
+                {
+                    "id": convo.id,
+                    "message": convo.message,
+                    "response": convo.response,
+                    "timestamp": convo.timestamp.isoformat() + "Z",
+                }
+                for convo in conversations
+            ],
+        }
     finally:
         if own_session:
             session.close()

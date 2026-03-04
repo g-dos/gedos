@@ -16,6 +16,11 @@ memory:
   database_path: "gedos.db"
   retention_days: 30
 
+privacy:
+  task_history_days: 90
+  pattern_decay_days: 30
+  export_format: "json"
+
 modes:
   pilot: true
   copilot: false

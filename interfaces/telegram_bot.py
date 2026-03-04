@@ -5,7 +5,10 @@ Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 
 import asyncio
 from datetime import datetime
+from io import BytesIO
+import json
 import logging
+from pathlib import Path
 import secrets
 from typing import Optional
 from collections import defaultdict
@@ -29,8 +32,11 @@ from core.memory import (
     add_conversation,
     add_allowed_chat,
     add_task as memory_add_task,
+    cleanup_old_data,
     delete_pattern,
     delete_all_patterns,
+    delete_user_data,
+    export_user_data,
     get_custom_permissions,
     get_permission_level,
     get_voice_output,
@@ -81,6 +87,7 @@ _pending_plan_decision: dict[int, asyncio.Future] = {}
 _pending_destructive_decision: dict[int, asyncio.Future] = {}
 _pending_pattern_decision: dict[int, dict] = {}
 _pending_custom_permission_flow: dict[int, dict] = {}
+_pending_delete_data_confirmation: set[int] = set()
 _unauthorized_chat_log_at: dict[str, float] = {}
 _generated_pairing_code: Optional[str] = None
 _pattern_index_per_user: dict[int, list[str]] = {}
@@ -90,6 +97,7 @@ _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX = 10  # max commands per minute
 RATE_LIMIT_WINDOW = 60.0  # seconds
 UNAUTHORIZED_LOG_WINDOW = 60.0
+_MAX_MESSAGE_CHARS = 4000
 _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
     "node ", "npm ", "python", "python3", "cd ", "head ", "tail ", "wc ",
@@ -301,6 +309,22 @@ def _voice_task_summary(text: str, lang: str) -> str:
     if safe.lower().startswith(prefix.lower()):
         return safe
     return f"{prefix} {safe}"
+
+
+def _export_dir() -> Path:
+    """Return the directory used for privacy exports."""
+    path = Path.home() / ".gedos" / "exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_export_file(user_id: str) -> Path:
+    """Write a JSON export for one user and return the file path."""
+    payload = export_user_data(str(user_id))
+    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    target = _export_dir() / f"gedos-export-{user_id}-{stamp}.json"
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return target
 
 
 def _permission_status_message(user_id: str, lang: str) -> str:
@@ -822,6 +846,36 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(t("config_open_instructions", lang, path=str(get_gedos_md_path())))
 
 
+async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Export all stored user data as a JSON attachment."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update)
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+    cleanup_old_data(str(chat_id))
+    path = _write_export_file(str(chat_id))
+    document = BytesIO(path.read_bytes())
+    document.name = path.name
+    await context.bot.send_document(chat_id=chat_id, document=document, filename=path.name)
+    await update.message.reply_text(t("export_ready", lang, path=str(path)))
+
+
+async def cmd_deletedata(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ask for confirmation before deleting all user-scoped data."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    uid = _user_id(update)
+    lang = _user_lang(update)
+    if uid is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+    _pending_delete_data_confirmation.add(uid)
+    await update.message.reply_text(t("deletedata_confirm", lang))
+
+
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _current_task, _task_status, _task_cancelled
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
@@ -829,8 +883,14 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = update.message.text.strip()
     lang = _user_lang(update, text)
+    if len(text) > _MAX_MESSAGE_CHARS:
+        await update.message.reply_text(t("input_too_long", lang, max=_MAX_MESSAGE_CHARS))
+        return
     uid = _user_id(update)
     chat_id = _chat_id(update)
+    if len(text) > _MAX_MESSAGE_CHARS:
+        await update.message.reply_text(t("input_too_long", lang, max=_MAX_MESSAGE_CHARS))
+        return
     if uid is not None and not _check_rate_limit(uid):
         await update.message.reply_text(t("rate_limit", lang))
         return
@@ -838,6 +898,9 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     payload = text[5:].strip() if text.lower().startswith("/task") else text
     if not payload:
         await update.message.reply_text(t("usage_task", lang))
+        return
+    if _task_status == "running":
+        await update.message.reply_text(t("task_already_running", lang))
         return
 
     uid = _user_id(update)
@@ -1137,7 +1200,25 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
     uid = _user_id(update)
-    if uid is None or uid not in _pending_custom_permission_flow:
+    if uid is None:
+        return
+    if uid in _pending_delete_data_confirmation:
+        text = update.message.text.strip()
+        lang = _user_lang(update, text)
+        chat_id = _chat_id(update)
+        if text != "DELETE":
+            _pending_delete_data_confirmation.discard(uid)
+            await update.message.reply_text(t("deletedata_cancelled", lang))
+            return
+        if chat_id is None:
+            _pending_delete_data_confirmation.discard(uid)
+            await update.message.reply_text(t("cannot_identify_user", lang))
+            return
+        delete_user_data(str(chat_id))
+        _pending_delete_data_confirmation.discard(uid)
+        await update.message.reply_text(t("deletedata_complete", lang))
+        return
+    if uid not in _pending_custom_permission_flow:
         return
     state = _pending_custom_permission_flow[uid]
     choice = update.message.text.strip().lower()
@@ -1598,6 +1679,9 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     text = update.message.text.strip()
     lang = _user_lang(update, text)
+    if len(text) > _MAX_MESSAGE_CHARS:
+        await update.message.reply_text(t("input_too_long", lang, max=_MAX_MESSAGE_CHARS))
+        return
     url = text[5:].strip() if text.lower().startswith("/web") else text
     if not url:
         await update.message.reply_text(t("usage_web", lang))
@@ -1628,12 +1712,17 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     text = update.message.text.strip()
     lang = _user_lang(update, text)
+    if len(text) > _MAX_MESSAGE_CHARS:
+        await update.message.reply_text(t("input_too_long", lang, max=_MAX_MESSAGE_CHARS))
+        return
     question = text[4:].strip() if text.lower().startswith("/ask") else text
     if not question:
         await update.message.reply_text(t("usage_ask", lang))
         return
     from core.llm import complete
     reply = complete(question, max_tokens=1024, language=lang)
+    if not reply.strip():
+        reply = t("no_result", lang)
     if len(reply) > 4000:
         reply = reply[:4000] + t("truncated_suffix", lang)
     await update.message.reply_text(reply)
@@ -1707,6 +1796,14 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(t("internal_error", lang))
         except Exception:
             pass
+
+
+async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply gracefully to unknown Telegram commands."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update, update.message.text if update.message else None)
+    await update.message.reply_text(t("unknown_command", lang))
 
 
 async def cmd_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1803,6 +1900,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("voice", cmd_voice))
     app.add_handler(CommandHandler("permissions", cmd_permissions))
     app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("deletedata", cmd_deletedata))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("owner", cmd_owner))
@@ -1812,6 +1911,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("schedules", cmd_schedules))
     app.add_handler(CommandHandler("unschedule", cmd_unschedule))
+    app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     app.add_error_handler(_error_handler)

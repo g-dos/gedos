@@ -253,6 +253,14 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=...
 ```
 
+## Privacy
+
+Gedos stores local state in `~/.gedos/gedos.db`, including task history, learned patterns, and user preferences.
+
+Use `/export` to download your stored data and `/deletedata` to erase it locally.
+
+When using Ollama, task content can stay local. If you configure Claude or OpenAI, task content may be sent to those providers.
+
 ---
 
 ## Requirements

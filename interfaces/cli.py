@@ -5,6 +5,7 @@ GEDOS CLI Mode — local interactive shell when Telegram is not configured.
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 from pathlib import Path
 import subprocess
@@ -21,9 +22,12 @@ from core.config import (
 from core.llm import complete
 from core.memory import (
     add_context,
+    cleanup_old_data,
+    delete_user_data,
     get_custom_permissions,
     delete_all_patterns,
     delete_pattern,
+    export_user_data,
     get_owner,
     get_patterns,
     get_permission_level,
@@ -45,6 +49,13 @@ _CLI_TASK_STATUS = "idle"
 _CLI_CURRENT_TASK = ""
 _CLI_COPILOT_ACTIVE = False
 _CLI_COPILOT_SENSITIVITY = "medium"
+_MAX_CLI_INPUT = 4000
+
+
+def _sanitize_profile_value(value: str) -> str:
+    """Keep profile values single-line and compact for GEDOS.md."""
+    cleaned = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    return cleaned[:120]
 
 
 def _latest_cli_profile() -> dict[str, str]:
@@ -185,8 +196,8 @@ def _gedos_md_template(name: str, refer_as: str, permission_level: str) -> str:
         "# Gedos reads this file on every startup.\n"
         "\n"
         "## About you\n"
-        f"name: {name}\n"
-        f"refer_as: {refer_as}\n"
+        f"name: {_sanitize_profile_value(name)}\n"
+        f"refer_as: {_sanitize_profile_value(refer_as)}\n"
         "\n"
         "## Preferences\n"
         "language: auto\n"
@@ -220,7 +231,21 @@ def _run_onboarding() -> None:
 
     name = ""
     while not name:
-        name = input("What's your name? > ").strip()
+        name = _sanitize_profile_value(input("What's your name? > "))
+
+    print(
+        "📋 Privacy notice:\n"
+        "Gedos stores data locally on your Mac in ~/.gedos/gedos.db:\n"
+        "• Your name and preferences\n"
+        "• Task history\n"
+        "• Learned behavioral patterns\n"
+        "\n"
+        "When using Claude/OpenAI API: task content is sent to\n"
+        "their servers. Using Ollama keeps everything local.\n"
+        "\n"
+        "Commands: /export (download your data) /deletedata (erase all)\n"
+    )
+    input("Press Enter to continue...")
 
     print(
         "How should Gedos refer to you?\n"
@@ -233,7 +258,7 @@ def _run_onboarding() -> None:
     )
     refer_choice = input().strip()
     if refer_choice == "2":
-        refer_as = input("Custom title > ").strip() or name
+        refer_as = _sanitize_profile_value(input("Custom title > ")) or name
     elif refer_choice == "3":
         refer_as = "you"
     else:
@@ -275,10 +300,15 @@ def _run_onboarding() -> None:
     if token:
         write_env_value("TELEGRAM_BOT_TOKEN", token)
 
-    gedos_md_path = _ensure_gedos_md(name, refer_as, permission_level)
-    print("Open GEDOS.md to customize your experience? [y/N]: ", end="", flush=True)
-    if input().strip().lower() == "y":
-        subprocess.run(["open", str(gedos_md_path)], check=False)
+    gedos_md_path: Optional[Path] = None
+    try:
+        gedos_md_path = _ensure_gedos_md(name, refer_as, permission_level)
+    except OSError as exc:
+        logger.warning("Could not create GEDOS.md: %s", exc)
+    if gedos_md_path is not None:
+        print("Open GEDOS.md to customize your experience? [y/N]: ", end="", flush=True)
+        if input().strip().lower() == "y":
+            subprocess.run(["open", str(gedos_md_path)], check=False)
 
     add_context(
         "cli_profile",
@@ -290,6 +320,22 @@ def _run_onboarding() -> None:
     if permission_level == "custom":
         set_custom_permissions(CLI_USER_ID, custom_permissions)
     print(f"Welcome, {name}. CLI Mode is ready.")
+
+
+def _export_dir() -> Path:
+    """Return the local directory used for privacy exports."""
+    path = Path.home() / ".gedos" / "exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_export_file() -> Path:
+    """Write a user-data export file and return its path."""
+    payload = export_user_data(CLI_USER_ID)
+    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    target = _export_dir() / f"gedos-export-{stamp}.json"
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return target
 
 
 def _help_text() -> str:
@@ -324,6 +370,8 @@ def _help_text() -> str:
         "  /memory                 Recent task history\n"
         "  /patterns               Learned behavioral patterns\n"
         "  /forget <id|all>        Remove learned patterns\n"
+        "  /export                 Export your local data as JSON\n"
+        "  /deletedata             Permanently erase your local data\n"
         "\n"
         "COPILOT\n"
         "  /copilot on|off         Toggle proactive suggestions\n"
@@ -435,7 +483,6 @@ def _handle_schedule_command(text: str) -> str:
         start_scheduler,
     )
 
-    start_scheduler()
     if text == "/schedule history":
         history = [task for task in get_recent_tasks(limit=20, user_id=CLI_USER_ID) if task.agent_used == "scheduler"][:5]
         if not history:
@@ -450,16 +497,22 @@ def _handle_schedule_command(text: str) -> str:
         schedule_data = parse_schedule_command(text)
         if not schedule_data:
             return "Invalid schedule format."
-        task = create_schedule(
-            user_id=CLI_USER_ID,
-            frequency=schedule_data["frequency"],
-            schedule_time=schedule_data["time"],
-            task_description=schedule_data["task"],
-            day_of_week=schedule_data.get("day_of_week"),
-            schedule_date=schedule_data.get("schedule_date"),
-            schedule_times=schedule_data.get("times"),
-            interval_minutes=schedule_data.get("interval_minutes"),
-        )
+        try:
+            start_scheduler()
+            task = create_schedule(
+                user_id=CLI_USER_ID,
+                frequency=schedule_data["frequency"],
+                schedule_time=schedule_data["time"],
+                task_description=schedule_data["task"],
+                day_of_week=schedule_data.get("day_of_week"),
+                schedule_date=schedule_data.get("schedule_date"),
+                schedule_times=schedule_data.get("times"),
+                interval_minutes=schedule_data.get("interval_minutes"),
+            )
+        except RuntimeError as exc:
+            if "no running event loop" in str(exc).lower():
+                return "Scheduling is unavailable in CLI mode right now. Start Telegram mode to run background schedules."
+            raise
         return f"Scheduled #{task.id}: {schedule_data.get('human_readable', task.task_description)}"
     if text == "/schedules":
         tasks = list_user_schedules(CLI_USER_ID)
@@ -489,6 +542,11 @@ def _handle_schedule_command(text: str) -> str:
 def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
     """Execute one CLI command and return (response, updated_voice_enabled)."""
     global _CLI_TASK_STATUS, _CLI_CURRENT_TASK, _CLI_COPILOT_ACTIVE, _CLI_COPILOT_SENSITIVITY
+    raw_command = command or ""
+    if len(raw_command) > _MAX_CLI_INPUT:
+        return (f"Input too long. Max {_MAX_CLI_INPUT} characters.", voice_enabled)
+    if any(ord(char) < 32 and char not in ("\n", "\r", "\t") for char in raw_command):
+        return ("Unsupported control characters in input.", voice_enabled)
     text = (command or "").strip()
     if not text:
         return ("", voice_enabled)
@@ -497,6 +555,8 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
     if text == "/exit":
         raise EOFError
     if text == "/stop":
+        if _CLI_TASK_STATUS == "idle" or not _CLI_CURRENT_TASK:
+            return ("No task running.", voice_enabled)
         request_stop()
         _CLI_TASK_STATUS = "stopped"
         return ("⛔ Stopped.", voice_enabled)
@@ -530,6 +590,23 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         return ("Voice mode disabled. I'll respond in text only.", False)
     if text == "/voice status":
         return ("Voice mode is on." if voice_enabled else "Voice mode is off.", voice_enabled)
+    if text == "/export":
+        cleanup_old_data(CLI_USER_ID)
+        path = _write_export_file()
+        return (f"Export saved to {path}", voice_enabled)
+    if text == "/deletedata":
+        confirmation = input(
+            "⚠️ This will permanently delete:\n"
+            "- All task history\n"
+            "- All learned patterns\n"
+            "- All preferences\n"
+            "- Your owner registration\n"
+            "This cannot be undone. Type DELETE to confirm:\n> "
+        ).strip()
+        if confirmation != "DELETE":
+            return ("Data deletion cancelled.", voice_enabled)
+        delete_user_data(CLI_USER_ID)
+        return ("Your local Gedos data has been deleted.", False)
     if text == "/memory":
         tasks = get_recent_tasks(limit=10, user_id=CLI_USER_ID)
         if not tasks:
@@ -540,6 +617,8 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         return ("\n".join(lines), voice_enabled)
     if text == "/patterns":
         return (_format_patterns(), voice_enabled)
+    if text == "/forget":
+        return ("Usage: /forget <id|all>", voice_enabled)
     if text.startswith("/forget "):
         arg = text.split(maxsplit=1)[1].strip().lower()
         if arg == "all":
@@ -553,6 +632,16 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
             return (f"Pattern #{index} not found.", voice_enabled)
         removed = delete_pattern(patterns[index - 1].id, CLI_USER_ID)
         return (f"Pattern #{index} removed." if removed else f"Pattern #{index} not found.", voice_enabled)
+    if text == "/task":
+        return ("Usage: /task <task description>", voice_enabled)
+    if text == "/ask":
+        return ("Usage: /ask <question>", voice_enabled)
+    if text == "/web":
+        return ("Usage: /web <url>", voice_enabled)
+    if text == "/schedule":
+        return ("Usage: /schedule <when> \"<task>\"", voice_enabled)
+    if text == "/unschedule":
+        return ("Usage: /unschedule <id>", voice_enabled)
     if text.startswith("/copilot "):
         lower = text.lower()
         if lower == "/copilot on":
@@ -594,7 +683,8 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
     if text.startswith("/schedule ") or text in {"/schedules"} or text.startswith("/unschedule "):
         return (_handle_schedule_command(text), voice_enabled)
     if text.startswith("/ask "):
-        return (complete(text[5:].strip(), language="en"), voice_enabled)
+        reply = complete(text[5:].strip(), language="en").strip()
+        return (reply or "No result.", voice_enabled)
     if text.startswith("/web "):
         web_action = get_command_permission_action("", user_id=CLI_USER_ID, category_override="web_browsing")
         if web_action == "block":
@@ -602,8 +692,9 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         if web_action == "confirm" and not _confirm_cli_permission("Web browsing requires approval. Continue?"):
             return ("Web browsing denied.", voice_enabled)
         return (_format_web_result(text[5:].strip()), voice_enabled)
-
     task = text[6:].strip() if text.startswith("/task ") else text
+    if text.startswith("/") and not text.startswith("/task "):
+        return ("Unknown command. Use /help.", voice_enabled)
     command_action = get_command_permission_action(task, user_id=CLI_USER_ID)
     if command_action == "block":
         return ("This command is blocked by your custom permissions.", voice_enabled)

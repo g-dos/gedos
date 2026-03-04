@@ -137,5 +137,6 @@ def test_delete_all_patterns_also_removes_pattern_rows(db_session):
 
     deleted = delete_all_patterns("user1", session=db_session)
 
-    assert deleted >= 2
+    assert deleted == 1
     assert db_session.query(Pattern).filter(Pattern.user_id == "user1").count() == 0
+    assert db_session.query(Task).filter(Task.user_id == "user1").count() == 1

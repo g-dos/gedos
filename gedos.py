@@ -168,6 +168,10 @@ def main() -> int:
         _banner(active_mode, config)
 
     from core.memory_profiler import log_memory_stats
+    from core.memory import cleanup_all_users, init_db as memory_init_db
+
+    memory_init_db()
+    cleanup_all_users()
     log_memory_stats("startup")
     logger = logging.getLogger(__name__)
     logger.info("Gedos v%s starting (%s mode)", __version__, active_mode)
