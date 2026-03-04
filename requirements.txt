@@ -45,6 +45,10 @@ PyGithub>=2.0.0
 # Optional: for voice input via Telegram voice messages
 # pip install openai-whisper
 
+# v0.9.8: Voice output
+gTTS>=2.5.0
+pydub>=0.25.1
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=1.0.0
