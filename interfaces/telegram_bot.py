@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 from core.config import get_gedos_md_path, get_telegram_token, pilot_enabled, load_config, update_config
-from core.copilot_context import analyze_context
+from core.copilot_context import analyze_context, get_copilot_sensitivity_seconds
 from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
     add_conversation,
@@ -80,12 +80,6 @@ _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX = 10  # max commands per minute
 RATE_LIMIT_WINDOW = 60.0  # seconds
 UNAUTHORIZED_LOG_WINDOW = 60.0
-_COPILOT_SENSITIVITY_SECONDS = {
-    "high": 30.0,
-    "medium": 60.0,
-    "low": 300.0,
-}
-
 _SHELL_SAFE_PREFIXES = (
     "ls", "pwd", "whoami", "date", "git ", "cat ", "echo ", "which ",
     "node ", "npm ", "python", "python3", "cd ", "head ", "tail ", "wc ",
@@ -343,7 +337,8 @@ def _copilot_sensitivity(user_id: int) -> str:
 
 
 def _copilot_cooldown_seconds(user_id: int) -> float:
-    return _COPILOT_SENSITIVITY_SECONDS[_copilot_sensitivity(user_id)]
+    values = get_copilot_sensitivity_seconds()
+    return values.get(_copilot_sensitivity(user_id), values["medium"])
 
 
 def _copilot_sensitivity_label(user_id: int, lang: str) -> str:

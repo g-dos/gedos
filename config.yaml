@@ -24,6 +24,10 @@ copilot:
   check_interval: 10
   suggestions: true
   warnings: true
+  sensitivity:
+    high: 10
+    medium: 30
+    low: 120
 
 web:
   browser: "chromium"

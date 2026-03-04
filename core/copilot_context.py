@@ -9,10 +9,17 @@ from datetime import datetime
 from typing import Optional
 
 from core.behavior_tracker import get_active_patterns
+from core.config import load_config
 from interfaces.i18n import t
 from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_COPILOT_SENSITIVITY_SECONDS: dict[str, float] = {
+    "high": 10.0,
+    "medium": 30.0,
+    "low": 120.0,
+}
 
 ERROR_RISK_KEYWORDS = (
     "error", "exception", "failed", "failure", "erro", "falha",
@@ -27,6 +34,22 @@ class CopilotHint:
     app: Optional[str] = None
     task_hint: Optional[str] = None  # Suggested /task payload for "Run" button
     source: str = "generic"
+
+
+def get_copilot_sensitivity_seconds() -> dict[str, float]:
+    """Return Copilot cooldowns from config with sane defaults."""
+    values = dict(DEFAULT_COPILOT_SENSITIVITY_SECONDS)
+    try:
+        configured = ((load_config().get("copilot") or {}).get("sensitivity") or {})
+    except Exception:
+        configured = {}
+    for key in ("high", "medium", "low"):
+        try:
+            if key in configured:
+                values[key] = max(float(configured[key]), 1.0)
+        except (TypeError, ValueError):
+            logger.warning("Invalid copilot sensitivity value for %s: %r", key, configured.get(key))
+    return values
 
 
 def _minutes_from_trigger(trigger: str, now: datetime) -> Optional[float]:
