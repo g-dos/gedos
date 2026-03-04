@@ -4,6 +4,7 @@ Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import secrets
 from typing import Optional
@@ -605,7 +606,12 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 _task_status = "idle"
                 await progress_msg.edit_text(t("task_cancelled", lang))
                 return
-            out = run_task_with_langgraph(payload, language=lang)
+            out = run_task_with_langgraph(
+                payload,
+                language=lang,
+                user_id=str(chat_id) if chat_id is not None else None,
+                context={"time": datetime.utcnow()},
+            )
             if _task_cancelled or is_stop_requested():
                 _task_status = "idle"
                 await progress_msg.edit_text(t("task_cancelled", lang))

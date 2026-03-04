@@ -335,6 +335,18 @@ def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str,
         return {"success": False, "result": f"Multi-step planning error: {str(e)[:500]}", "agent_used": "planner"}
 
 
+def _observe_completed_task(task: str, user_id: Optional[str], context: Optional[dict], result: dict[str, Any]) -> None:
+    """Record a successful task with the behavior tracker."""
+    if not result.get("success") or not user_id:
+        return
+    try:
+        from core.behavior_tracker import observe
+
+        observe(task, str(user_id), context or {})
+    except Exception:
+        logger.exception("Behavior tracker observe failed")
+
+
 def run_single_step_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Route and execute a single-step task. Returns dict with success, result, agent_used.
@@ -343,7 +355,12 @@ def run_single_step_task(task: str, language: Optional[str] = None) -> dict[str,
     return _execute_single_step(agent, task, language=language)
 
 
-def run_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
+def run_task(
+    task: str,
+    language: Optional[str] = None,
+    user_id: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """
     Route and execute a task (single or multi-step). Returns dict with success, result, agent_used.
     """
@@ -353,20 +370,29 @@ def run_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
         
         if _is_multi_step_task(task):
             logger.info("Detected multi-step task: %s", task[:80])
-            return _run_multi_step_task(task, language=language)
+            result = _run_multi_step_task(task, language=language)
         else:
             logger.info("Executing single-step task: %s", task[:80])
-            return run_single_step_task(task, language=language)
+            result = run_single_step_task(task, language=language)
+        _observe_completed_task(task, user_id, context, result)
+        return result
 
     except ImportError:
         logger.warning("Task planner not available, using single-step execution")
-        return run_single_step_task(task, language=language)
+        result = run_single_step_task(task, language=language)
+        _observe_completed_task(task, user_id, context, result)
+        return result
     except Exception as e:
         logger.exception("Task routing failed")
         return {"success": False, "result": f"Task routing error: {str(e)[:500]}", "agent_used": "orchestrator"}
 
 
-def run_task_with_langgraph(task: str, language: Optional[str] = None) -> dict[str, Any]:
+def run_task_with_langgraph(
+    task: str,
+    language: Optional[str] = None,
+    user_id: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """
     Run task through a LangGraph workflow with multi-step support.
     State flows: task -> plan -> execute -> result.
@@ -419,13 +445,15 @@ def run_task_with_langgraph(task: str, language: Optional[str] = None) -> dict[s
         }
         final = compiled.invoke(initial)
         
-        return {
+        result = {
             "success": final["success"], 
             "result": final["result"], 
             "agent_used": final["agent_used"]
         }
+        _observe_completed_task(task, user_id, context, result)
+        return result
     except ImportError:
-        return run_task(task, language=language)
+        return run_task(task, language=language, user_id=user_id, context=context)
     except Exception as e:
         logger.exception("LangGraph run failed: %s", e)
-        return run_task(task, language=language)
+        return run_task(task, language=language, user_id=user_id, context=context)
