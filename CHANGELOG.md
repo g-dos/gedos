@@ -2,6 +2,23 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.6.2] — 2026-03
+
+### Security Hardening Patch 2
+- **Auto-generated pairing code**: when no `PAIRING_CODE` is configured, Gedos now generates a one-time local claim code and requires it before the first owner can claim the bot
+- **`pip install` path traversal blocked**: local paths such as `../`, `/tmp`, `~/`, and `file:` are now rejected during command sanitization
+- **Unsafe `git` flags blocked**: dangerous flags such as `--exec-path` and path-valued long options are now rejected before execution
+- **Database file permissions**: `gedos.db` is now forced to `0600` during database initialization and startup checks
+- **Webhook identifier sanitization**: GitHub repo and branch names must now match a safe allowlist before CI healing starts
+- **Per-user task history**: task history is now scoped by `user_id`, so `/memory` only shows data from the requesting chat
+- **`/forget all` implemented**: users can now clear their own learned patterns and stored user-scoped history
+- **NUL byte and non-printable input blocked**: command sanitization now rejects embedded NUL bytes and control characters up front
+- **Unauthorized chat log throttling**: repeated unauthorized chat spam now logs at most once per chat per minute
+
+### Validation
+- **Red-team regression**: all 19 shell attack payloads are now blocked by `sanitize_command()`
+- **Test suite**: all tests pass after the second hardening pass (`94 passed`)
+
 ## [0.9.6.1] — 2026-03
 
 ### Security Hardening
