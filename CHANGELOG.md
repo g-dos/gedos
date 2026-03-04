@@ -2,6 +2,19 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.11] — 2026-03
+
+### Added
+- **Homebrew formula**: added `Formula/gedos.rb` so Gedos can be distributed as a Homebrew formula
+- **Homebrew installation guide**: added `docs/homebrew.md` with install, update, uninstall, HEAD install, and troubleshooting instructions
+
+### Enhanced
+- **Version output for packaging**: `gedos.py --version` now prints `gedos v0.9.11`, matching the Homebrew formula test expectation for this release cut
+- **Install docs clarified**: the existing README install section now shows Homebrew as the recommended path and keeps the manual path as a secondary option
+
+### Validation
+- **Packaging prep**: the Homebrew formula, CLI version output, and install docs are in place for the `v0.9.11` packaging pass
+
 ## [0.9.10] — 2026-03
 
 ### Added
