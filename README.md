@@ -17,35 +17,26 @@ Gedos is an open-source autonomous AI agent that runs natively on macOS. It read
 
 ---
 
-## Quick Start
+## Install
+
+**Via Homebrew (recommended):**
 
 ```bash
-# Clone the repository
+brew tap g-dos/gedos
+brew install gedos
+gedos
+```
+
+**Manual:**
+
+```bash
 git clone https://github.com/g-dos/gedos.git
 cd gedos
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Install and start Ollama (default LLM)
-brew install ollama
-ollama serve
-ollama pull llama3.3
-
-# Install Playwright browsers (for web tasks)
-playwright install chromium
-
-# Configure Telegram bot
-cp .env.example .env
-# Add your Telegram bot token to .env
-
-# Run Gedos
 python gedos.py
 ```
 
-Send `/start` to your bot on Telegram to begin.
-
-**Full setup guide**: [docs/setup-ollama.md](docs/setup-ollama.md)
+**Full setup guide**: [docs/setup-ollama.md](docs/setup-ollama.md) and [docs/homebrew.md](docs/homebrew.md)
 
 ## MCP Mode
 
