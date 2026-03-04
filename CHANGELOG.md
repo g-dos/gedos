@@ -2,6 +2,28 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.12.1] — 2026-03
+
+### Security
+- **GUI execution hardening**: removed the remaining `shell=True` fallback from the GUI agent and now validate/split generic GUI commands before execution
+- **Proactive notification sanitization**: proactive messages are now normalized before delivery so untrusted GitHub titles and process names do not reach users with raw control characters or markdown-like payloads
+- **GitHub watcher baseline**: the watcher now establishes a baseline on first poll to avoid replaying every existing issue, PR, and CI failure as a new alert
+
+### Compliance
+- **Right to erasure**: added `/deletedata` with explicit confirmation and full user-scoped deletion across history, patterns, schedules, preferences, and owner/allowed-chat registration
+- **Data portability**: added `/export` to generate a JSON export of the user's stored data
+- **Privacy notice**: CLI onboarding now shows a privacy notice explaining local storage, cloud-provider behavior, and the new `/export` and `/deletedata` commands
+- **Retention policy**: added `privacy.task_history_days`, `privacy.pattern_decay_days`, and `privacy.export_format` to `config.yaml`
+- **Automatic cleanup**: startup and a daily scheduler maintenance job now prune expired task/conversation history based on the configured retention window
+- **README transparency**: added a privacy section documenting local storage and cloud-provider data flow
+
+### Reliability
+- **Input validation**: CLI and Telegram now reject oversized inputs, handle empty LLM replies safely, and report unknown commands instead of silently routing them as tasks
+- **CLI scheduling guardrails**: CLI schedule commands now fail gracefully when no async event loop is available instead of surfacing a runtime crash
+- **Task-state protection**: Telegram now refuses to start a second task while one is already running, preventing the global task tracker from being overwritten
+- **User-scoped context lookups**: permission, language, and timezone reads now filter by `user_id` at the SQL layer instead of loading recent rows and filtering in Python
+- **Profile/env sanitization**: onboarding profile values and `.env` writes are normalized to single-line values to prevent accidental config injection
+
 ## [0.9.12] — 2026-03
 
 ### Added
