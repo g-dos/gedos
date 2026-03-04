@@ -56,3 +56,4 @@ tzlocal>=4.3
 pytest>=8.0.0
 pytest-asyncio>=1.0.0
 pytest-timeout>=2.3.1
+pytest-cov>=5.0.0
