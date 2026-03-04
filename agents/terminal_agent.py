@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.config import get_agent_config
-from core.retry import retry_with_backoff
+from core.security import SecurityError, sanitize_command
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +94,13 @@ def _exec_shell(
     cwd: Optional[str] = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
 ) -> TerminalResult:
-    """Single-attempt shell execution."""
+    """Single-attempt execution with shell disabled."""
     try:
+        parts = shlex.split(command)
+        if not parts:
+            return TerminalResult(success=False, stdout="", stderr="Empty command.", return_code=-1, command=command)
         proc = subprocess.run(
-            command, shell=True, cwd=cwd, capture_output=True, text=True,
+            parts, shell=False, cwd=cwd, capture_output=True, text=True,
             timeout=timeout_seconds,
         )
         return TerminalResult(
@@ -124,6 +127,9 @@ def run_shell(
     cfg = get_agent_config("terminal")
     t = timeout_seconds or cfg.get("timeout", DEFAULT_TIMEOUT)
     retries = max_retries if max_retries is not None else cfg.get("max_retries", 1)
+    is_safe, reason = sanitize_command(command)
+    if not is_safe:
+        raise SecurityError(reason)
 
     result = _exec_shell(command, cwd=cwd, timeout_seconds=t)
     if result.success or retries <= 1:
@@ -142,6 +148,44 @@ def reset_step_cwd() -> None:
     """Reset the per-task working directory used by execute_step."""
     global _STEP_CWD
     _STEP_CWD = None
+
+
+def _handle_simple_redirection(command: str) -> Optional[dict[str, str]]:
+    """Handle safe `echo ... > file` without invoking a shell."""
+    if ">" not in command or ">>" in command:
+        return None
+    if any(op in command for op in ("|", "&&", "||", ";", "<")):
+        return None
+
+    try:
+        left, right = command.split(">", 1)
+    except ValueError:
+        return None
+    left = left.strip()
+    right = right.strip()
+    if not left.startswith("echo ") or not right:
+        return None
+
+    parts = shlex.split(left)
+    if len(parts) < 2 or parts[0] != "echo":
+        return None
+
+    target = os.path.expanduser(right)
+    if not os.path.isabs(target):
+        base_dir = _STEP_CWD or os.getcwd()
+        target = os.path.join(base_dir, target)
+    target = os.path.abspath(target)
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    content = " ".join(parts[1:]) + "\n"
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return {
+        "success": True,
+        "result": f"Wrote file {target}",
+        "agent_used": "terminal",
+        "command": command,
+    }
 
 
 def _handle_cd_command(command: str) -> Optional[dict[str, str]]:
@@ -235,9 +279,20 @@ def execute_step(step) -> dict[str, str]:
         cd_result = _handle_cd_command(action)
         if cd_result is not None:
             return cd_result
+        redirect_result = _handle_simple_redirection(action)
+        if redirect_result is not None:
+            return redirect_result
 
         # First attempt
-        result = run_shell(action, cwd=_STEP_CWD)
+        try:
+            result = run_shell(action, cwd=_STEP_CWD)
+        except SecurityError as exc:
+            return {
+                "success": False,
+                "result": f"SecurityError: {exc}",
+                "agent_used": "terminal",
+                "command": action,
+            }
         
         # If successful, return immediately
         if result.success:
@@ -266,7 +321,16 @@ def execute_step(step) -> dict[str, str]:
                 corrected_cd_result["original_command"] = action
                 return corrected_cd_result
 
-            corrected_result = run_shell(corrected_command, cwd=_STEP_CWD)
+            try:
+                corrected_result = run_shell(corrected_command, cwd=_STEP_CWD)
+            except SecurityError as exc:
+                corrected_result = TerminalResult(
+                    success=False,
+                    stdout="",
+                    stderr=f"SecurityError: {exc}",
+                    return_code=-1,
+                    command=corrected_command,
+                )
             
             if corrected_result.success:
                 out = (corrected_result.stdout or "").strip() or "(no output)"

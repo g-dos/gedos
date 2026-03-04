@@ -28,8 +28,8 @@ def test_run_shell_echo():
     assert "world" in r.stdout
 
 
-def test_run_shell_pipeline():
-    r = run_shell("echo abc | tr a-z A-Z")
+def test_run_shell_list_args():
+    r = run_shell("echo ABC")
     assert r.success is True
     assert "ABC" in r.stdout
 

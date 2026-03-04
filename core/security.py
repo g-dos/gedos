@@ -2,46 +2,124 @@
 GEDOS security utilities — input sanitization and validation.
 """
 
+import os
 import logging
 import re
-import os
+import shlex
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Blacklisted shell characters and patterns
-DANGEROUS_PATTERNS = [
-    r";.*rm\s+-rf",  # rm -rf after semicolon
-    r"&&.*rm\s+-rf",  # rm -rf after &&
-    r"\|.*rm\s+-rf",  # rm -rf after pipe
-    r">\s*/dev/",  # Redirect to /dev/*
-    r"curl.*\|\s*sh",  # Pipe curl to shell
-    r"wget.*\|\s*sh",  # Pipe wget to shell
+DEFAULT_ALLOWED_EXECUTABLES = {
+    "git", "python", "python3", "pytest", "pip", "ls", "cat", "echo", "mkdir",
+    "touch", "cp", "mv", "cd", "pwd", "find", "grep", "curl", "brew", "npm", "node",
+    "open", "which", "env", "export", "source", "playwright", "ollama",
+}
+BLOCKED_OPERATORS = {";", "&&", "||", "|", ">", ">>", "<", "`", "$", "(", ")", "{", "}", "\n"}
+BLOCKED_TERMS = {
+    "rm", "sudo", "su", "chmod", "chown", "eval", "exec", "dd", "mkfs",
+    "kill", "killall", "shutdown", "reboot",
+}
+BLOCKED_COMPOUND_PATTERNS = (
+    "curl|sh",
+    "wget|sh",
+)
+DESTRUCTIVE_PATTERNS = [
+    r"\brm\b",
+    r"\bmv\b",
+    r"\bpip install\b",
+    r"\bgit push\b",
+    r"\bgit commit\b",
+    r"\bdeploy\b",
+    r"\bsudo\b",
+    r"\bchmod\b",
+    r"\bchown\b",
 ]
 
 
-def sanitize_command(command: str) -> Optional[str]:
+class SecurityError(RuntimeError):
+    """Raised when a command is blocked by a security policy."""
+    pass
+
+
+def get_allowed_executables(config: Optional[dict] = None) -> set[str]:
+    """Return the configured allowlist for shell execution."""
+    if config is None:
+        try:
+            from core.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+    configured = ((config.get("security") or {}).get("allowed_executables") or [])
+    if configured:
+        return {str(item).strip() for item in configured if str(item).strip()}
+    return set(DEFAULT_ALLOWED_EXECUTABLES)
+
+
+def sanitize_command(command: str) -> tuple[bool, str]:
     """
-    Sanitize user input for shell execution.
-    Returns None if command is dangerous, otherwise returns sanitized command.
+    Validate a command against a strict allowlist and blocked token set.
+    Returns (is_safe, reason).
     """
     if not command or not command.strip():
-        return None
-    
+        return False, "Empty command."
+
     cmd = command.strip()
-    
-    # Check for dangerous patterns
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, cmd, re.IGNORECASE):
-            logger.warning("Blocked dangerous command: %s", cmd[:50])
-            return None
-    
-    # Block raw shell injection attempts
-    if ";;" in cmd or "$()" in cmd or "`" in cmd:
-        logger.warning("Blocked potential shell injection: %s", cmd[:50])
-        return None
-    
-    return cmd
+
+    low = cmd.lower()
+    for pattern in BLOCKED_COMPOUND_PATTERNS:
+        if pattern in low.replace(" ", ""):
+            reason = f"Blocked dangerous pattern: {pattern}"
+            logger.warning("%s in command: %s", reason, cmd[:80])
+            return False, reason
+
+    for operator in BLOCKED_OPERATORS:
+        if operator in cmd:
+            reason = f"Blocked dangerous token: {operator}"
+            logger.warning("%s in command: %s", reason, cmd[:80])
+            return False, reason
+
+    try:
+        parts = shlex.split(cmd)
+    except ValueError as exc:
+        reason = f"Command parsing failed: {exc}"
+        logger.warning("%s", reason)
+        return False, reason
+
+    if not parts:
+        return False, "Empty command."
+
+    executable = parts[0]
+    if executable not in get_allowed_executables():
+        reason = f"Executable not allowed: {executable}"
+        logger.warning("%s", reason)
+        return False, reason
+
+    for token in parts:
+        if token.lower() in BLOCKED_TERMS:
+            reason = f"Blocked dangerous token: {token}"
+            logger.warning("%s in command: %s", reason, cmd[:80])
+            return False, reason
+
+    return True, "ok"
+
+
+def is_destructive_command(command: str) -> bool:
+    """Return whether a command matches a destructive pattern."""
+    low = (command or "").strip().lower()
+    return any(re.search(pattern, low) for pattern in DESTRUCTIVE_PATTERNS)
+
+
+def get_allowed_chat_ids() -> set[str]:
+    """Parse ALLOWED_CHAT_IDS from environment."""
+    raw = os.getenv("ALLOWED_CHAT_IDS", "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def get_pairing_code() -> Optional[str]:
+    """Return the optional Telegram pairing code."""
+    code = os.getenv("PAIRING_CODE", "").strip()
+    return code or None
 
 
 def sanitize_url(url: str) -> Optional[str]:
@@ -108,4 +186,3 @@ def validate_api_keys(config: dict) -> bool:
     
     logger.info("API keys validated successfully")
     return True
-

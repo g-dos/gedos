@@ -50,7 +50,7 @@ def test_mcp_server_initializes_correctly(monkeypatch):
 
 def test_run_terminal_command_tool_returns_output(monkeypatch):
     server = _build_server(monkeypatch)
-    monkeypatch.setattr(mcp_server, "sanitize_command", lambda command: command)
+    monkeypatch.setattr(mcp_server, "sanitize_command", lambda command: (True, "ok"))
     monkeypatch.setattr(
         mcp_server,
         "run_shell",

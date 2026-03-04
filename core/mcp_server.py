@@ -17,7 +17,7 @@ from core.llm import complete
 from core.memory import add_task as memory_add_task
 from core.memory import get_recent_tasks
 from core.memory import init_db as memory_init_db
-from core.security import sanitize_command, sanitize_url
+from core.security import SecurityError, sanitize_command, sanitize_url
 from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
@@ -99,12 +99,18 @@ def create_mcp_server():
         description="Execute a shell command on the local Mac and return stdout and stderr.",
     )
     def run_terminal_command(command: str) -> str:
-        safe_command = sanitize_command(command)
-        if not safe_command:
-            result_text = "Command blocked by safety checks."
+        is_safe, reason = sanitize_command(command)
+        if not is_safe:
+            result_text = f"Command blocked by safety checks: {reason}"
             _record_task(f"[mcp] terminal: {command}", False, "mcp-terminal", result_text)
             return result_text
-        result = run_shell(safe_command)
+        safe_command = command.strip()
+        try:
+            result = run_shell(safe_command)
+        except SecurityError as exc:
+            result_text = f"Command blocked by safety checks: {exc}"
+            _record_task(f"[mcp] terminal: {safe_command}", False, "mcp-terminal", result_text)
+            return result_text
         result_text = _format_terminal_output(
             safe_command,
             result.success,

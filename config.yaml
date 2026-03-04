@@ -34,7 +34,14 @@ github:
   webhook_port: 9876
   auto_fix: true
   auto_pr: true
+  auto_merge: false
   notify_on_failure: true
+  pr_label: "gedos-bot"
+
+security:
+  strict_shell: true
+  confirm_destructive: true
+  allowed_executables: []
 
 agents:
   max_retries: 3
