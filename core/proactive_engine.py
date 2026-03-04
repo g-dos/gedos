@@ -74,7 +74,7 @@ def known_user_ids() -> list[str]:
     return users
 
 
-def _effective_cooldown(user_id: str) -> timedelta:
+def _effective_cooldown(user_id: str, priority: str = "medium") -> timedelta:
     """Resolve the effective cooldown for a user using Copilot sensitivity."""
     values = {"high": 10.0, "medium": 30.0, "low": 120.0}
     try:
@@ -92,7 +92,11 @@ def _effective_cooldown(user_id: str) -> timedelta:
             sensitivity = _copilot_sensitivity_per_user.get(int(user_id), "medium")
     except Exception:
         sensitivity = "medium"
-    seconds = max(30.0, float(values.get(sensitivity, values["medium"])))
+    sensitivity_seconds = float(values.get(sensitivity, values["medium"]))
+    if priority == "high":
+        seconds = 30.0
+    else:
+        seconds = max(30.0, sensitivity_seconds)
     return timedelta(seconds=seconds)
 
 
@@ -123,7 +127,7 @@ def notify(user_id: str, message: str, category: str, priority: str) -> bool:
     event = ProactiveEvent(normalized_user, normalized_message, category, priority)
     with _LOCK:
         last_sent = _LAST_SENT_AT.get(event.user_id)
-        if last_sent and (now - last_sent) < _effective_cooldown(event.user_id):
+        if last_sent and (now - last_sent) < _effective_cooldown(event.user_id, event.priority):
             return False
         if _is_duplicate(event.user_id, event.message, now):
             return False
