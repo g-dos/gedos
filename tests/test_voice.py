@@ -70,9 +70,10 @@ class TestVoiceHandlerRouting:
             with patch("interfaces.telegram_bot.cmd_task", new_callable=AsyncMock) as mock_cmd:
                 with patch("interfaces.telegram_bot.add_conversation"):
                     with patch("interfaces.telegram_bot._check_rate_limit", return_value=True):
-                        await handle_voice_message(mock_update, mock_ctx)
-                        mock_cmd.assert_called_once()
-                        assert mock_msg.text == "/task open VS Code"
+                        with patch("interfaces.telegram_bot._ignore_if_unauthorized", return_value=False):
+                            await handle_voice_message(mock_update, mock_ctx)
+                            mock_cmd.assert_called_once()
+                            assert mock_msg.text == "/task open VS Code"
 
     @pytest.mark.asyncio
     async def test_voice_rejects_too_long(self):
@@ -92,7 +93,8 @@ class TestVoiceHandlerRouting:
         mock_ctx = AsyncMock()
 
         with patch("interfaces.telegram_bot._check_rate_limit", return_value=True):
-            await handle_voice_message(mock_update, mock_ctx)
+            with patch("interfaces.telegram_bot._ignore_if_unauthorized", return_value=False):
+                await handle_voice_message(mock_update, mock_ctx)
         mock_msg.reply_text.assert_called_once()
         call_args = str(mock_msg.reply_text.call_args)
         assert "60" in call_args or "long" in call_args.lower()

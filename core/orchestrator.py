@@ -3,12 +3,37 @@ GEDOS Orchestrator — LangGraph task planning and routing to Terminal, GUI, Web
 Supports both single-step and multi-step task execution.
 """
 
+import asyncio
 import logging
 from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
 AgentKind = Literal["terminal", "gui", "web", "llm"]
+_STOP_EVENT: Optional[asyncio.Event] = None
+
+
+def _get_stop_event() -> asyncio.Event:
+    """Return the shared stop event."""
+    global _STOP_EVENT
+    if _STOP_EVENT is None:
+        _STOP_EVENT = asyncio.Event()
+    return _STOP_EVENT
+
+
+def request_stop() -> None:
+    """Signal an immediate stop request."""
+    _get_stop_event().set()
+
+
+def clear_stop() -> None:
+    """Reset the stop signal after handling it."""
+    _get_stop_event().clear()
+
+
+def is_stop_requested() -> bool:
+    """Return whether a stop was requested."""
+    return _get_stop_event().is_set()
 
 
 def _route_task(task: str) -> AgentKind:
@@ -33,9 +58,15 @@ def _route_task(task: str) -> AgentKind:
 
 def _run_terminal(task: str) -> dict[str, Any]:
     """Execute task via terminal agent (lazy import)."""
-    from agents.terminal_agent import run_shell, TerminalResult
+    if is_stop_requested():
+        return {"success": False, "result": "Stopped.", "agent_used": "terminal"}
+    from agents.terminal_agent import run_shell
+    from core.security import SecurityError
 
-    r = run_shell(task)
+    try:
+        r = run_shell(task)
+    except SecurityError as exc:
+        return {"success": False, "result": str(exc), "agent_used": "terminal"}
     out = (r.stdout or "").strip() or "(no output)"
     err = (r.stderr or "").strip()
     if len(out) > 3000:
@@ -48,6 +79,8 @@ def _run_terminal(task: str) -> dict[str, Any]:
 
 def _run_gui(task: str) -> dict[str, Any]:
     """Execute task via GUI agent (lazy import)."""
+    if is_stop_requested():
+        return {"success": False, "result": "Stopped.", "agent_used": "gui"}
     from agents.gui_agent import click_button, get_screen_summary
     import subprocess
     import time
@@ -149,6 +182,8 @@ def _run_gui(task: str) -> dict[str, Any]:
 
 def _run_web(task: str) -> dict[str, Any]:
     """Execute task via web agent (lazy import)."""
+    if is_stop_requested():
+        return {"success": False, "result": "Stopped.", "agent_used": "web"}
     from agents.web_agent import navigate, search_google, WebResult
 
     low = task.lower()
@@ -201,6 +236,8 @@ def _web_result_to_dict(r) -> dict[str, Any]:
 
 def _run_llm(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """Execute task via LLM (lazy import)."""
+    if is_stop_requested():
+        return {"success": False, "result": "Stopped.", "agent_used": "llm"}
     from core.llm import complete as llm_complete
 
     reply = llm_complete(task, max_tokens=1024, language=language)
@@ -209,6 +246,8 @@ def _run_llm(task: str, language: Optional[str] = None) -> dict[str, Any]:
 
 def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language: Optional[str] = None) -> dict[str, Any]:
     """Execute a single step with the specified agent."""
+    if is_stop_requested():
+        return {"success": False, "result": "Stopped.", "agent_used": agent}
     logger.info("Executing step with %s: %s", agent, action[:80])
 
     # Try using the new execute_step method if step_obj is provided
@@ -254,6 +293,8 @@ def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str,
     try:
         from core.task_planner import plan_task
 
+        if is_stop_requested():
+            return {"success": False, "result": "Stopped.", "agent_used": "orchestrator"}
         plan = plan_task(task, language=language)
 
         if not plan.is_multi_step or not plan.steps:
@@ -306,6 +347,7 @@ def run_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
     """
     Route and execute a task (single or multi-step). Returns dict with success, result, agent_used.
     """
+    clear_stop()
     try:
         from core.task_planner import _is_multi_step_task
         
@@ -329,6 +371,7 @@ def run_task_with_langgraph(task: str, language: Optional[str] = None) -> dict[s
     Run task through a LangGraph workflow with multi-step support.
     State flows: task -> plan -> execute -> result.
     """
+    clear_stop()
     try:
         from typing import TypedDict
         from langgraph.graph import StateGraph, START, END

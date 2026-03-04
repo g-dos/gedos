@@ -3,6 +3,7 @@ GEDOS Telegram interface — Pilot and Copilot mode.
 Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 """
 
+import asyncio
 import logging
 from typing import Optional
 from collections import defaultdict
@@ -22,16 +23,22 @@ from core.config import get_telegram_token, pilot_enabled, load_config
 from core.copilot_context import analyze_context
 from core.memory import (
     add_conversation,
+    add_allowed_chat,
     add_task as memory_add_task,
     get_recent_tasks,
+    get_owner,
     init_db as memory_init_db,
     get_recent_conversations,
     get_user_language,
+    list_allowed_chats,
+    remove_allowed_chat,
+    set_owner,
 )
 from interfaces.i18n import t
-from core.orchestrator import run_task_with_langgraph
+from core.orchestrator import clear_stop, is_stop_requested, request_stop, run_task_with_langgraph
 from agents.terminal_agent import run_shell, TerminalResult
 from agents.gui_agent import click_button
+from core.security import SecurityError, get_allowed_chat_ids, get_pairing_code, is_destructive_command
 from tools.ax_tree import get_ax_tree
 
 logger = logging.getLogger(__name__)
@@ -48,6 +55,8 @@ _copilot_sensitivity_per_user: dict[int, str] = {}
 
 # Error recovery state for multi-step tasks
 _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
+_pending_plan_decision: dict[int, asyncio.Future] = {}
+_pending_destructive_decision: dict[int, asyncio.Future] = {}
 
 # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
@@ -125,9 +134,64 @@ def _format_terminal_result(r: TerminalResult, lang: str = "en") -> str:
 
 
 def _user_id(update: Update) -> Optional[int]:
-    if update.effective_user:
-        return update.effective_user.id
+    effective_user = getattr(update, "effective_user", None)
+    effective_user_id = getattr(effective_user, "id", None)
+    if isinstance(effective_user_id, int):
+        return effective_user_id
+    message = getattr(update, "message", None)
+    if message:
+        from_user = getattr(message, "from_user", None)
+        from_user_id = getattr(from_user, "id", None)
+        if isinstance(from_user_id, int):
+            return from_user_id
     return None
+
+
+def _chat_id(update: Update) -> Optional[int]:
+    effective_chat = getattr(update, "effective_chat", None)
+    effective_chat_id = getattr(effective_chat, "id", None)
+    if isinstance(effective_chat_id, int):
+        return effective_chat_id
+    message = getattr(update, "message", None)
+    if message:
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if isinstance(chat_id, int):
+            return chat_id
+    return None
+
+
+def _authorized_chat_ids() -> set[str]:
+    memory_init_db()
+    owner = get_owner()
+    allowed = {entry.chat_id for entry in list_allowed_chats()}
+    env_allowed = get_allowed_chat_ids()
+    if owner:
+        allowed.add(owner.chat_id)
+    allowed.update(env_allowed)
+    return allowed
+
+
+def _is_authorized_chat(chat_id: Optional[int]) -> bool:
+    memory_init_db()
+    if chat_id is None:
+        return False
+    owner = get_owner()
+    if owner is None:
+        return False
+    return str(chat_id) in _authorized_chat_ids()
+
+
+def _ignore_if_unauthorized(update: Update, allow_unpaired_start: bool = False) -> bool:
+    memory_init_db()
+    chat_id = _chat_id(update)
+    owner = get_owner()
+    if owner is None:
+        return not allow_unpaired_start
+    if _is_authorized_chat(chat_id):
+        return False
+    logger.warning("Ignoring unauthorized chat_id=%s", chat_id)
+    return True
 
 
 def _user_lang(update: Update, text: Optional[str] = None) -> str:
@@ -217,12 +281,12 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
     global _task_status, _task_cancelled
     
     try:
-        from core.task_planner import plan_task
         from core.orchestrator import _execute_single_step
         from agents.terminal_agent import reset_step_cwd
 
         reset_step_cwd()
         try:
+            from core.task_planner import plan_task
             plan = plan_task(task, language=lang)
         
             if not plan.is_multi_step or not plan.steps:
@@ -238,7 +302,7 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             
             # Execute each step with progress updates
             for i, step in enumerate(plan.steps):
-                if _task_cancelled:
+                if _task_cancelled or is_stop_requested():
                     _task_status = "idle"
                     await progress_msg.edit_text(t("task_cancelled_at_step", lang, n=i + 1, t=steps_count))
                     return {"success": False, "result": t("task_cancelled", lang), "agent_used": "cancelled"}
@@ -313,10 +377,23 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
+    if _ignore_if_unauthorized(update, allow_unpaired_start=True):
+        return
     uid = _user_id(update)
+    chat_id = _chat_id(update)
     lang = _user_lang(update)
-    
-    # Check if first time user (no conversation history)
+    memory_init_db()
+
+    owner = get_owner()
+    if owner is None and chat_id is not None:
+        pairing_code = get_pairing_code()
+        parts = update.message.text.strip().split(maxsplit=1)
+        provided_code = parts[1].strip() if len(parts) > 1 else ""
+        if pairing_code and provided_code != pairing_code:
+            await update.message.reply_text(t("pairing_required", lang))
+            return
+        set_owner(str(chat_id))
+
     if uid is not None:
         from core.memory import get_recent_conversations, init_db
         init_db()
@@ -335,7 +412,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+    if not update.message or _ignore_if_unauthorized(update):
         return
     uid = _user_id(update)
     lang = _user_lang(update)
@@ -350,7 +427,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _current_task, _task_status, _task_cancelled
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
 
     text = update.message.text.strip()
@@ -366,6 +443,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     uid = _user_id(update)
+    clear_stop()
     _current_task = payload
     _task_status = "running"
     _task_cancelled = False
@@ -403,11 +481,21 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
     if _looks_like_shell_command(payload):
-        if _task_cancelled:
+        if is_destructive_command(payload):
+            if not await _confirm_destructive_command(update, lang, payload):
+                _task_status = "idle"
+                await update.message.reply_text(t("destructive_denied", lang))
+                return
+        if _task_cancelled or is_stop_requested():
             _task_status = "idle"
             await update.message.reply_text(t("task_cancelled", lang))
             return
-        result = run_shell(payload)
+        try:
+            result = run_shell(payload)
+        except SecurityError as exc:
+            _task_status = "idle"
+            await update.message.reply_text(str(exc))
+            return
         _task_status = "idle"
         reply = _format_terminal_result(result, lang)
         await update.message.reply_text(reply)
@@ -424,9 +512,25 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         is_multi_step = False
 
     if is_multi_step:
-        progress_msg = await update.message.reply_text(t("planning", lang))
+        from core.task_planner import plan_task
+        plan = plan_task(payload, language=lang)
+        if not plan.is_multi_step or not plan.steps:
+            is_multi_step = False
+        else:
+            progress_msg = await update.message.reply_text(
+                t(
+                    "dry_run_plan",
+                    lang,
+                    n=len(plan.steps),
+                    steps="\n".join(f"{i + 1}. {step.agent}: {step.action}" for i, step in enumerate(plan.steps)),
+                )
+            )
+            if not await _confirm_plan(uid, progress_msg, lang):
+                _task_status = "idle"
+                await progress_msg.edit_text(t("dry_run_cancelled", lang))
+                return
         try:
-            if _task_cancelled:
+            if _task_cancelled or is_stop_requested():
                 _task_status = "idle"
                 await progress_msg.edit_text(t("task_cancelled", lang))
                 return
@@ -445,12 +549,12 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         progress_msg = await update.message.reply_text(t("task_started", lang))
         try:
-            if _task_cancelled:
+            if _task_cancelled or is_stop_requested():
                 _task_status = "idle"
                 await progress_msg.edit_text(t("task_cancelled", lang))
                 return
             out = run_task_with_langgraph(payload, language=lang)
-            if _task_cancelled:
+            if _task_cancelled or is_stop_requested():
                 _task_status = "idle"
                 await progress_msg.edit_text(t("task_cancelled", lang))
                 return
@@ -475,7 +579,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+    if not update.message or _ignore_if_unauthorized(update):
         return
     lang = _user_lang(update)
     global _current_task, _task_status
@@ -495,14 +599,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _task_status, _task_cancelled
-    if not update.message:
+    if not update.message or _ignore_if_unauthorized(update):
         return
     lang = _user_lang(update)
-    if _task_status == "running":
+    if _task_status in ("running", "stopped"):
         _task_cancelled = True
         _task_status = "stopped"
+        request_stop()
         logger.info("Task cancellation requested")
-        await update.message.reply_text(t("task_cancelled_request", lang))
+        await update.message.reply_text(t("task_stopped", lang))
     else:
         await update.message.reply_text(t("no_task_running", lang))
 
@@ -510,13 +615,15 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Health check: /ping."""
     if update.message:
+        if _ignore_if_unauthorized(update):
+            return
         lang = _user_lang(update)
         await update.message.reply_text(t("pong", lang))
 
 
 async def cmd_github(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show GitHub webhook status or connection instructions."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
 
     text = update.message.text.strip()
@@ -541,8 +648,20 @@ async def cmd_github(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user decision to continue after step failure."""
+    if _ignore_if_unauthorized(update):
+        return
     uid = _user_id(update)
     lang = _user_lang(update)
+    if uid is not None and uid in _pending_destructive_decision:
+        future = _pending_destructive_decision.pop(uid)
+        if not future.done():
+            future.set_result(True)
+        return
+    if uid is not None and uid in _pending_plan_decision:
+        future = _pending_plan_decision.pop(uid)
+        if not future.done():
+            future.set_result(True)
+        return
     if uid is None or uid not in _pending_step_decision:
         await update.message.reply_text(t("no_pending_decision", lang))
         return
@@ -554,8 +673,20 @@ async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user decision to cancel after step failure."""
+    if _ignore_if_unauthorized(update):
+        return
     uid = _user_id(update)
     lang = _user_lang(update)
+    if uid is not None and uid in _pending_destructive_decision:
+        future = _pending_destructive_decision.pop(uid)
+        if not future.done():
+            future.set_result(False)
+        return
+    if uid is not None and uid in _pending_plan_decision:
+        future = _pending_plan_decision.pop(uid)
+        if not future.done():
+            future.set_result(False)
+        return
     if uid is None or uid not in _pending_step_decision:
         await update.message.reply_text(t("no_pending_decision", lang))
         return
@@ -582,7 +713,7 @@ def _is_background_noise_only(text: str) -> bool:
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe and execute as /task."""
-    if not update.message or not update.message.voice:
+    if not update.message or not update.message.voice or _ignore_if_unauthorized(update):
         return
 
     uid = _user_id(update)
@@ -655,7 +786,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create a scheduled task: /schedule daily 09:00 "check HN"."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
 
     text = update.message.text.strip()
@@ -706,7 +837,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """List all active schedules: /schedules."""
-    if not update.message:
+    if not update.message or _ignore_if_unauthorized(update):
         return
 
     lang = _user_lang(update)
@@ -756,7 +887,7 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Remove a schedule: /unschedule 5."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
 
     lang = _user_lang(update)
@@ -841,7 +972,7 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
 
 async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manage Copilot Mode: on | off | status | sensitivity."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
     uid = _user_id(update)
     if uid is None:
@@ -886,7 +1017,7 @@ async def _send_copilot_suggestion(context: ContextTypes.DEFAULT_TYPE, user_id: 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show recent tasks from memory."""
-    if not update.message:
+    if not update.message or _ignore_if_unauthorized(update):
         return
     lang = _user_lang(update)
     tasks = get_recent_tasks(limit=10)
@@ -904,7 +1035,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Navigate to URL: /web https://example.com or /web example.com."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
     text = update.message.text.strip()
     lang = _user_lang(update, text)
@@ -925,7 +1056,7 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Ask the LLM: /ask your question."""
-    if not update.message or not update.message.text:
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
         return
     text = update.message.text.strip()
     lang = _user_lang(update, text)
@@ -993,12 +1124,92 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Global error handler — logs errors and recovers gracefully."""
     logger.error("Telegram error: %s", context.error, exc_info=context.error)
-    if isinstance(update, Update) and update.message:
+    if isinstance(update, Update) and update.message and not _ignore_if_unauthorized(update):
         try:
             lang = _user_lang(update)
             await update.message.reply_text(t("internal_error", lang))
         except Exception:
             pass
+
+
+async def cmd_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage owner and allowed chats."""
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
+        return
+
+    chat_id = _chat_id(update)
+    owner = get_owner()
+    if owner and str(chat_id) != owner.chat_id:
+        return
+
+    lang = _user_lang(update, update.message.text)
+    parts = update.message.text.strip().split()
+    if len(parts) < 2:
+        await update.message.reply_text(t("usage_owner", lang))
+        return
+
+    action = parts[1].lower()
+    if action == "status":
+        allowed = sorted(_authorized_chat_ids())
+        await update.message.reply_text(
+            t("owner_status", lang, owner=owner.chat_id if owner else "none", allowed=", ".join(allowed) or "none")
+        )
+        return
+    if action == "allow" and len(parts) == 3:
+        add_allowed_chat(parts[2])
+        await update.message.reply_text(t("owner_allowed", lang, chat_id=parts[2]))
+        return
+    if action == "revoke" and len(parts) == 3:
+        remove_allowed_chat(parts[2])
+        await update.message.reply_text(t("owner_revoked", lang, chat_id=parts[2]))
+        return
+    await update.message.reply_text(t("usage_owner", lang))
+
+
+def _full_access_mode() -> bool:
+    """Treat non-strict shell mode as full-access mode."""
+    config = load_config()
+    return not (config.get("security") or {}).get("strict_shell", True)
+
+
+async def _confirm_plan(uid: Optional[int], progress_msg, lang: str) -> bool:
+    """Wait for user approval before running a multi-step plan."""
+    if uid is None:
+        return False
+    if _full_access_mode():
+        for seconds in range(5, 0, -1):
+            await progress_msg.edit_text(t("dry_run_countdown", lang, seconds=seconds))
+            await asyncio.sleep(1)
+            if is_stop_requested():
+                return False
+        return True
+
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _pending_plan_decision[uid] = future
+    try:
+        return bool(await asyncio.wait_for(future, timeout=300.0))
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        _pending_plan_decision.pop(uid, None)
+
+
+async def _confirm_destructive_command(update: Update, lang: str, command: str) -> bool:
+    """Require explicit confirmation before a destructive command."""
+    if _full_access_mode():
+        return True
+    uid = _user_id(update)
+    if uid is None or not update.message:
+        return False
+    await update.message.reply_text(t("destructive_confirm", lang, command=command))
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _pending_destructive_decision[uid] = future
+    try:
+        return bool(await asyncio.wait_for(future, timeout=300.0))
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        _pending_destructive_decision.pop(uid, None)
 
 
 def build_application() -> Application:
@@ -1023,6 +1234,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("github", cmd_github))
+    app.add_handler(CommandHandler("owner", cmd_owner))
     app.add_handler(CommandHandler("yes", cmd_yes))
     app.add_handler(CommandHandler("no", cmd_no))
     app.add_handler(CommandHandler("schedule", cmd_schedule))

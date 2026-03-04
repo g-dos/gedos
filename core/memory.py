@@ -74,6 +74,24 @@ class ScheduledTask(Base):
     last_run: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class Owner(Base):
+    """Authorized Telegram owner chat."""
+
+    __tablename__ = "owners"
+
+    chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AllowedChat(Base):
+    """Additional authorized Telegram chats."""
+
+    __tablename__ = "allowed_chats"
+
+    chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 def get_engine(database_path: Optional[str] = None):
     """Create SQLite engine. Uses config if database_path is None."""
     if database_path is None:
@@ -265,6 +283,88 @@ def get_recent_context(type_name: Optional[str] = None, limit: int = 10, session
         if type_name:
             q = q.filter(Context.type == type_name)
         return list(q.order_by(Context.timestamp.desc()).limit(limit).all())
+    finally:
+        if own_session:
+            session.close()
+
+
+# --- Owner/Auth CRUD ---
+
+
+def get_owner(session: Optional[Session] = None) -> Optional[Owner]:
+    """Return the configured owner chat, if any."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        return session.query(Owner).order_by(Owner.created_at.asc()).first()
+    finally:
+        if own_session:
+            session.close()
+
+
+def set_owner(chat_id: str, session: Optional[Session] = None) -> Owner:
+    """Persist the bot owner chat."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        owner = get_owner(session=session)
+        if owner:
+            return owner
+        owner = Owner(chat_id=str(chat_id))
+        session.add(owner)
+        session.commit()
+        session.refresh(owner)
+        return owner
+    finally:
+        if own_session:
+            session.close()
+
+
+def list_allowed_chats(session: Optional[Session] = None) -> list[AllowedChat]:
+    """Return explicitly allowed chats."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        return list(session.query(AllowedChat).order_by(AllowedChat.created_at.asc()).all())
+    finally:
+        if own_session:
+            session.close()
+
+
+def add_allowed_chat(chat_id: str, session: Optional[Session] = None) -> AllowedChat:
+    """Allow an additional chat id."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        existing = session.get(AllowedChat, str(chat_id))
+        if existing:
+            return existing
+        allowed = AllowedChat(chat_id=str(chat_id))
+        session.add(allowed)
+        session.commit()
+        session.refresh(allowed)
+        return allowed
+    finally:
+        if own_session:
+            session.close()
+
+
+def remove_allowed_chat(chat_id: str, session: Optional[Session] = None) -> bool:
+    """Revoke an allowed chat id."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = session.get(AllowedChat, str(chat_id))
+        if not entry:
+            return False
+        session.delete(entry)
+        session.commit()
+        return True
     finally:
         if own_session:
             session.close()

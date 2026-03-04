@@ -32,6 +32,13 @@ def mock_context():
     return Mock(spec=ContextTypes.DEFAULT_TYPE)
 
 
+@pytest.fixture(autouse=True)
+def allow_authorized_chat():
+    """Pilot integration tests are not auth tests; bypass auth gate."""
+    with patch("interfaces.telegram_bot._ignore_if_unauthorized", return_value=False):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_pilot_task_terminal_command(mock_update, mock_context):
     """Test Pilot Mode executing a terminal command."""
