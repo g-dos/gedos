@@ -19,13 +19,27 @@ import zipfile
 import requests
 from github import Github
 
-from agents.terminal_agent import run_command, run_shell
+from agents.terminal_agent import run_command
 from core.config import load_config
 from core.llm import complete
 from core.memory import Conversation, get_session, get_user_language, init_db as memory_init_db
+from core.security import SecurityError
 from interfaces.i18n import t
 
 logger = logging.getLogger(__name__)
+_MAX_SUGGESTED_FIX_BYTES = 1024 * 1024
+_UNSAFE_FIX_MESSAGE = "⚠️ Suggested fix contains unsafe code. Aborting."
+_BLOCKED_FIX_PATTERNS = (
+    re.compile(r"os\.system\("),
+    re.compile(r"subprocess\.call\("),
+    re.compile(r"eval\("),
+    re.compile(r"exec\("),
+    re.compile(r"__import__\("),
+    re.compile(r"open\([\"']/etc"),
+    re.compile(r"curl\s", re.IGNORECASE),
+    re.compile(r"wget\s", re.IGNORECASE),
+    re.compile(r"rm\s+-rf", re.IGNORECASE),
+)
 
 
 @dataclass(slots=True)
@@ -228,18 +242,18 @@ def _prepare_checkout(context: CIFailureContext):
     clone_root = Path(tempfile.mkdtemp(prefix="gedos-ci-"))
     checkout_dir = clone_root / repo.name
 
-    clone_result = run_shell(f"git clone {shlex.quote(tokenized_url)} {shlex.quote(str(checkout_dir))}")
+    clone_result = run_command(f"git clone {shlex.quote(tokenized_url)} {shlex.quote(str(checkout_dir))}")
     if not clone_result.success:
         raise RuntimeError(f"Failed to clone repository: {(clone_result.stderr or clone_result.stdout).strip()}")
 
-    fetch_result = run_shell(f"git fetch origin {shlex.quote(context.branch)}", cwd=str(checkout_dir))
+    fetch_result = run_command(f"git fetch origin {shlex.quote(context.branch)}", cwd=str(checkout_dir))
     if not fetch_result.success:
         raise RuntimeError(f"Failed to fetch branch {context.branch}: {(fetch_result.stderr or fetch_result.stdout).strip()}")
 
     remote_ref = f"origin/{context.branch}"
-    checkout_result = run_shell(f"git checkout --track {shlex.quote(remote_ref)}", cwd=str(checkout_dir))
+    checkout_result = run_command(f"git checkout --track {shlex.quote(remote_ref)}", cwd=str(checkout_dir))
     if not checkout_result.success:
-        fallback = run_shell(f"git checkout {shlex.quote(context.branch)}", cwd=str(checkout_dir))
+        fallback = run_command(f"git checkout {shlex.quote(context.branch)}", cwd=str(checkout_dir))
         if not fallback.success:
             raise RuntimeError(f"Failed to check out branch {context.branch}: {(fallback.stderr or fallback.stdout).strip()}")
 
@@ -248,16 +262,35 @@ def _prepare_checkout(context: CIFailureContext):
 
 def _resolve_target_file(repo_dir: Path, failure: ParsedFailure) -> Optional[Path]:
     """Resolve the best candidate target file inside the cloned repository."""
+    repo_root = os.path.realpath(repo_dir)
+
+    def _assert_inside_repo(candidate: Path) -> Path:
+        resolved = os.path.realpath(candidate)
+        if not resolved.startswith(repo_root + os.sep) and resolved != repo_root:
+            raise SecurityError("target file outside repo root")
+        return Path(resolved)
+
     if failure.file_path:
-        candidate = (repo_dir / failure.file_path).resolve()
+        candidate = _assert_inside_repo((repo_dir / failure.file_path).resolve())
         if candidate.exists() and candidate.is_file():
             return candidate
 
         matches = list(repo_dir.rglob(Path(failure.file_path).name))
         for match in matches:
-            if match.is_file():
-                return match
+            checked = _assert_inside_repo(match)
+            if checked.is_file():
+                return checked
     return None
+
+
+def _validate_suggested_fix(new_content: str) -> None:
+    """Reject unsafe or unexpectedly large LLM-generated patches."""
+    encoded = new_content.encode("utf-8")
+    if len(encoded) > _MAX_SUGGESTED_FIX_BYTES:
+        raise SecurityError("Suggested fix exceeds 1MB limit.")
+    for pattern in _BLOCKED_FIX_PATTERNS:
+        if pattern.search(new_content):
+            raise SecurityError(_UNSAFE_FIX_MESSAGE)
 
 
 def _run_validation_tests(repo_dir: Path) -> bool:
@@ -267,7 +300,7 @@ def _run_validation_tests(repo_dir: Path) -> bool:
         "pytest -q",
     )
     for command in commands:
-        result = run_shell(command, cwd=str(repo_dir), timeout_seconds=300)
+        result = run_command(command, cwd=str(repo_dir), timeout_seconds=300)
         if result.success:
             return True
     return False
@@ -277,22 +310,22 @@ def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedF
     """Commit the fix, push a branch, and open a pull request."""
     github_cfg = _github_config()
     branch_name = f"codex/ci-heal-{context.commit_sha[:7]}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
-    git_name = run_shell('git config user.name "Gedos CI Healer"', cwd=str(repo_dir))
-    git_email = run_shell('git config user.email "ci-healer@gedos.local"', cwd=str(repo_dir))
+    git_name = run_command('git config user.name "Gedos CI Healer"', cwd=str(repo_dir))
+    git_email = run_command('git config user.email "ci-healer@gedos.local"', cwd=str(repo_dir))
     if not git_name.success or not git_email.success:
         raise RuntimeError("Failed to configure git author for CI healer.")
 
-    branch_result = run_shell(f"git checkout -b {shlex.quote(branch_name)}", cwd=str(repo_dir))
+    branch_result = run_command(f"git checkout -b {shlex.quote(branch_name)}", cwd=str(repo_dir))
     if not branch_result.success:
         raise RuntimeError(f"Failed to create fix branch: {(branch_result.stderr or branch_result.stdout).strip()}")
 
-    add_result = run_shell("git add .", cwd=str(repo_dir))
-    commit_result = run_shell(
+    add_result = run_command("git add .", cwd=str(repo_dir))
+    commit_result = run_command(
         'git commit -m "fix: auto-heal CI failure"',
         cwd=str(repo_dir),
         timeout_seconds=120,
     )
-    push_result = run_shell(f"git push -u origin {shlex.quote(branch_name)}", cwd=str(repo_dir), timeout_seconds=300)
+    push_result = run_command(f"git push -u origin {shlex.quote(branch_name)}", cwd=str(repo_dir), timeout_seconds=300)
     if not add_result.success or not commit_result.success or not push_result.success:
         raise RuntimeError("Failed to commit and push the CI fix branch.")
 
@@ -373,6 +406,7 @@ def handle_ci_failure(context: CIFailureContext) -> None:
         suggested = _suggest_fixed_file_content(target_file, current_content, failure, context)
         if not suggested or suggested == current_content:
             raise RuntimeError("LLM did not produce a meaningful file change.")
+        _validate_suggested_fix(suggested)
 
         if not _write_file_via_terminal_agent(target_file, suggested):
             raise RuntimeError("Failed to apply file patch through terminal agent.")
@@ -396,6 +430,23 @@ def handle_ci_failure(context: CIFailureContext) -> None:
             pr_url=pr_url or "",
         )
         _notify_user(message)
+    except SecurityError as exc:
+        logger.warning("CI healer blocked by security policy: %s", exc)
+        if github_cfg["notify_on_failure"]:
+            if str(exc) == _UNSAFE_FIX_MESSAGE:
+                _notify_user(str(exc))
+            else:
+                chat_id = _latest_telegram_chat_id()
+                lang = _latest_telegram_language(chat_id)
+                _notify_user(
+                    t(
+                        "github_ci_fix_failure",
+                        lang,
+                        repo=context.repo_full_name,
+                        branch=context.branch,
+                        error_summary=str(exc),
+                    )
+                )
     except Exception as exc:
         logger.exception("CI healer failed")
         if github_cfg["notify_on_failure"]:
