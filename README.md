@@ -9,6 +9,30 @@ __                   __
   /____/
 ```
 
+[![CI](https://github.com/g-dos/gedos/actions/workflows/test.yml/badge.svg)](https://github.com/g-dos/gedos/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/g-dos/gedos/branch/main/graph/badge.svg)](https://codecov.io/gh/g-dos/gedos)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![macOS](https://img.shields.io/badge/macOS-12%2B-lightgrey.svg)](https://www.apple.com/macos/)
+[![Local-first AI](https://img.shields.io/badge/AI-local--first-green.svg)](https://ollama.ai)
+
+## Quick Start
+
+```bash
+brew tap g-dos/gedos
+brew install gedos
+gedos
+```
+
+**Test drive in 30 seconds** (no config needed):
+```text
+> what files are on my desktop?
+> open VS Code
+> what's the weather in São Paulo today?
+```
+
+→ [Watch the demo](#) · [Full setup guide](docs/setup.md)
+
 **Your Mac. Working while you're not.**
 
 Gedos is an open-source autonomous AI agent that lives on your Mac.
@@ -17,10 +41,6 @@ browses the web, learns your workflows, fixes your bugs while you sleep,
 and gives any AI hands to control your computer.
 
 Local. Private. Open source.
-
-[![Version](https://img.shields.io/badge/version-v0.9.11-blue)](https://github.com/g-dos/gedos/releases/tag/v0.9.11)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 
 ---
 
@@ -45,6 +65,51 @@ python gedos.py
 ---
 
 ## What Gedos can do
+
+## Real-world examples
+
+**Self-healing CI — while you sleep:**
+```text
+You:   [pushed a bug and went to sleep 🌙]
+
+Gedos: 🔴 CI failed on main — test_scheduler_parse
+       💡 Root cause: assertion expects hour=10, returns 9
+       🔧 Fix applied and tested locally (193 passed)
+       ✅ PR #42 opened → github.com/g-dos/gedos/pull/42
+```
+
+**Copilot Mode — real-time suggestions:**
+```text
+You:   [opens VS Code, error visible on screen]
+
+Gedos: 💡 I see errors in auth.py. Want me to fix them?
+You:   yes
+Gedos: ✅ Fixed TypeError on line 47. Tests passing.
+```
+
+**Morning briefing — proactive:**
+```text
+Gedos: ☀️ Good morning Santiago.
+
+       Yesterday: ✅ deploy ran · ✅ 3 tasks completed
+       Today: 2 open PRs · CI green · 1 new issue
+
+       Anything to start with?
+```
+
+**MCP — give Claude hands on your Mac:**
+```bash
+gedos --mcp
+# Now Claude Desktop can control your Mac as a tool
+```
+
+**Natural language scheduling:**
+```text
+> /schedule every weekday at 9am "check HN and brief me"
+
+Gedos: 📅 Every weekday at 9:00 AM — check HN and brief me
+       Next run: Tomorrow, Mon at 9:00 AM ✅
+```
 
 ### 🤖 Pilot Mode
 Send a task from anywhere. Gedos executes on your Mac and reports back.
@@ -307,6 +372,9 @@ Yes. Run `gedos --mcp` and connect it as an MCP server. See [docs/mcp.md](docs/m
 
 ### Is Gedos safe to run unattended?
 It is designed with confirmations, shell hardening, owner pairing, and strict mode by default, but Full Access mode and autonomous workflows still require judgment.
+
+### Is Gedos stable enough to run 24/7?
+Gedos runs 24/7 in background on my Mac without crashes in common scenarios (209+ tests passing, tested on macOS 13/14/15 with Ollama + Llama 3.2). In Full Access mode, use with caution — always review autonomous actions at first. Default mode requires confirmation for destructive commands.
 
 ---
 
