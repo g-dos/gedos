@@ -2,6 +2,25 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.6.3] — 2026-03
+
+### Security Hardening Patch 3
+- **Safe path restrictions**: `cat`, `find`, `cp`, `mv`, and `ls` now reject sensitive files, sensitive directories, and unsafe destinations while preserving safe relative project paths
+- **`env` removed from the allowlist**: direct environment dumps are no longer permitted through terminal execution
+- **Dangerous `git` operations blocked**: `-c`, global config changes, `clone`, `submodule`, `archive`, and related risky operations are now rejected during sanitization
+- **Blocked network-listening Python modules**: `python -m http.server`, `smtpd`, and other interactive or server-style modules are now blocked
+- **Command length limit**: shell commands longer than 1000 characters are rejected before parsing
+- **LLM security system prompt**: all LLM calls now include a built-in security prompt that refuses prompt-injection attempts, secret disclosure, and safety bypasses
+- **Planner prompt sanitization**: multi-step planning now strips common prompt-injection phrases and wraps user tasks as `USER TASK:` before sending them to the LLM
+- **CI healer path traversal blocked**: resolved target files must stay inside the checked-out repository root
+- **CI healer patch validation**: LLM-generated fixes are rejected if they are too large or contain obviously unsafe code patterns before any write occurs
+- **MCP task history scoped**: MCP history now reads and writes only within the dedicated `mcp_client` task stream
+- **Unsafe URL schemes blocked**: `ftp://`, `file://`, `javascript:`, `data:`, and similar schemes are explicitly rejected
+
+### Validation
+- **Advanced red-team regression**: the newly targeted shell abuse cases, prompt-injection paths, CI healer traversal checks, and MCP history leak are all covered by the updated tests
+- **Test suite**: all tests pass after the third hardening pass (`99 passed`)
+
 ## [0.9.6.2] — 2026-03
 
 ### Security Hardening Patch 2
