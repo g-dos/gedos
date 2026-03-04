@@ -4,6 +4,8 @@ GEDOS GitHub webhook receiver — accepts CI failure events and launches healing
 
 from __future__ import annotations
 
+from collections import deque
+from datetime import datetime, timedelta, UTC
 import hashlib
 import hmac
 import logging
@@ -18,6 +20,9 @@ from core.config import load_config
 
 logger = logging.getLogger(__name__)
 _WEBHOOK_STATE: dict[str, Any] = {"running": False, "port": 9876}
+_RECENT_DELIVERIES: deque[str] = deque(maxlen=100)
+_RECENT_DELIVERY_SET: set[str] = set()
+_REQUEST_TIMESTAMPS: deque[datetime] = deque()
 
 
 def _webhook_port() -> int:
@@ -76,12 +81,54 @@ def _build_failure_context(payload: dict) -> CIFailureContext:
     )
 
 
+def _payload_is_fresh(payload: dict) -> bool:
+    """Reject workflow events older than 5 minutes when a timestamp is available."""
+    workflow_run = payload.get("workflow_run") or {}
+    timestamp = workflow_run.get("updated_at") or workflow_run.get("created_at")
+    if not timestamp:
+        return True
+    try:
+        event_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = datetime.now(UTC)
+    return now - event_time <= timedelta(minutes=5)
+
+
+def _remember_delivery(delivery_id: str) -> bool:
+    """Track recent delivery IDs and reject duplicates."""
+    if not delivery_id:
+        return False
+    if delivery_id in _RECENT_DELIVERY_SET:
+        return False
+    if len(_RECENT_DELIVERIES) == _RECENT_DELIVERIES.maxlen:
+        dropped = _RECENT_DELIVERIES.popleft()
+        _RECENT_DELIVERY_SET.discard(dropped)
+    _RECENT_DELIVERIES.append(delivery_id)
+    _RECENT_DELIVERY_SET.add(delivery_id)
+    return True
+
+
+def _rate_limit_ok() -> bool:
+    """Allow at most 10 webhook requests per minute."""
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(minutes=1)
+    while _REQUEST_TIMESTAMPS and _REQUEST_TIMESTAMPS[0] < cutoff:
+        _REQUEST_TIMESTAMPS.popleft()
+    if len(_REQUEST_TIMESTAMPS) >= 10:
+        return False
+    _REQUEST_TIMESTAMPS.append(now)
+    return True
+
+
 def create_webhook_app() -> Flask:
     """Create the Flask app that receives GitHub webhooks."""
     app = Flask("gedos-github-webhook")
 
     @app.post("/webhook")
     def webhook():
+        if not _rate_limit_ok():
+            return jsonify({"status": "rate limited"}), 429
         raw_body = request.get_data()
         signature = request.headers.get("X-Hub-Signature-256", "")
         if not _signature_is_valid(raw_body, signature):
@@ -91,6 +138,11 @@ def create_webhook_app() -> Flask:
             return jsonify({"status": "ignored"}), 200
 
         payload = request.get_json(silent=True) or {}
+        delivery_id = request.headers.get("X-GitHub-Delivery", "")
+        if not _remember_delivery(delivery_id):
+            return jsonify({"status": "duplicate delivery"}), 409
+        if not _payload_is_fresh(payload):
+            return jsonify({"status": "stale event"}), 409
         workflow_run = payload.get("workflow_run") or {}
         if workflow_run.get("conclusion") != "failure":
             return jsonify({"status": "ignored"}), 200

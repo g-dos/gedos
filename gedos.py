@@ -129,7 +129,7 @@ def main() -> int:
             if args.webhook:
                 from core.github_webhook import get_webhook_status, run_github_webhook_server
 
-                threading.Thread(
+                webhook_thread = threading.Thread(
                     target=run_github_webhook_server,
                     name="gedos-github-webhook",
                     daemon=True,

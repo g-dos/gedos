@@ -19,7 +19,7 @@ import zipfile
 import requests
 from github import Github
 
-from agents.terminal_agent import run_shell
+from agents.terminal_agent import run_command, run_shell
 from core.config import load_config
 from core.llm import complete
 from core.memory import Conversation, get_session, get_user_language, init_db as memory_init_db
@@ -64,7 +64,9 @@ def _github_config() -> dict:
         "webhook_port": int(github_cfg.get("webhook_port", 9876)),
         "auto_fix": bool(github_cfg.get("auto_fix", True)),
         "auto_pr": bool(github_cfg.get("auto_pr", True)),
+        "auto_merge": bool(github_cfg.get("auto_merge", False)),
         "notify_on_failure": bool(github_cfg.get("notify_on_failure", True)),
+        "pr_label": str(github_cfg.get("pr_label", "gedos-bot")),
     }
 
 
@@ -197,13 +199,15 @@ def _suggest_fixed_file_content(
 
 
 def _write_file_via_terminal_agent(target_path: Path, new_content: str) -> bool:
-    """Write file contents by invoking a local Python process through the terminal agent."""
-    code = (
-        "from pathlib import Path\n"
-        f"Path({str(target_path)!r}).write_text({new_content!r}, encoding='utf-8')\n"
-    )
-    command = f"python -c {shlex.quote(code)}"
-    result = run_shell(command)
+    """Write file contents via a temporary file copy using the terminal agent."""
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
+        handle.write(new_content)
+        temp_path = handle.name
+    result = run_command(f"cp {shlex.quote(temp_path)} {shlex.quote(str(target_path))}")
+    try:
+        os.unlink(temp_path)
+    except OSError:
+        pass
     if not result.success:
         logger.error("Failed to write patched file %s: %s", target_path, (result.stderr or result.stdout).strip())
     return result.success
@@ -271,6 +275,7 @@ def _run_validation_tests(repo_dir: Path) -> bool:
 
 def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedFailure) -> tuple[int, str]:
     """Commit the fix, push a branch, and open a pull request."""
+    github_cfg = _github_config()
     branch_name = f"codex/ci-heal-{context.commit_sha[:7]}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
     git_name = run_shell('git config user.name "Gedos CI Healer"', cwd=str(repo_dir))
     git_email = run_shell('git config user.email "ci-healer@gedos.local"', cwd=str(repo_dir))
@@ -295,6 +300,9 @@ def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedF
         title=f"fix: auto-heal {failure.error_type}",
         body=(
             "Automated CI healer attempt.\n\n"
+            "- [x] Tests passed locally\n"
+            f"- [x] Files changed: {failure.file_path or 'unknown'}\n"
+            "- [x] Commands run: git add ., git commit -m \"fix: auto-heal CI failure\", git push -u origin <branch>\n\n"
             f"- Workflow: {context.workflow_name}\n"
             f"- Failed commit: {context.commit_sha}\n"
             f"- Target branch: {context.branch}\n"
@@ -303,6 +311,7 @@ def _create_pr(repo, repo_dir: Path, context: CIFailureContext, failure: ParsedF
         head=branch_name,
         base=context.branch,
     )
+    pr.add_to_labels(github_cfg["pr_label"])
     return pr.number, pr.html_url
 
 

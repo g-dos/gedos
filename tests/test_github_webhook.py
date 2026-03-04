@@ -6,6 +6,12 @@ import hmac
 import core.github_webhook as github_webhook
 
 
+def _reset_webhook_state():
+    github_webhook._RECENT_DELIVERIES.clear()
+    github_webhook._RECENT_DELIVERY_SET.clear()
+    github_webhook._REQUEST_TIMESTAMPS.clear()
+
+
 def _signature(secret: str, payload: bytes) -> str:
     digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
@@ -19,6 +25,7 @@ def test_webhook_validates_github_signature_correctly(monkeypatch):
 
 
 def test_invalid_signature_returns_403(monkeypatch):
+    _reset_webhook_state()
     app = github_webhook.create_webhook_app()
     client = app.test_client()
     payload = b'{"workflow_run":{"conclusion":"failure"}}'
@@ -38,6 +45,7 @@ def test_invalid_signature_returns_403(monkeypatch):
 
 
 def test_non_failure_workflow_run_event_is_ignored(monkeypatch):
+    _reset_webhook_state()
     app = github_webhook.create_webhook_app()
     client = app.test_client()
     raw_payload = b'{"workflow_run":{"conclusion":"success"}}'
@@ -49,6 +57,7 @@ def test_non_failure_workflow_run_event_is_ignored(monkeypatch):
         headers={
             "Content-Type": "application/json",
             "X-GitHub-Event": "workflow_run",
+            "X-GitHub-Delivery": "non-failure-1",
             "X-Hub-Signature-256": _signature("secret123", raw_payload),
         },
     )
@@ -58,6 +67,7 @@ def test_non_failure_workflow_run_event_is_ignored(monkeypatch):
 
 
 def test_failure_event_triggers_ci_healer_with_correct_context(monkeypatch):
+    _reset_webhook_state()
     app = github_webhook.create_webhook_app()
     client = app.test_client()
     payload = {
@@ -102,6 +112,7 @@ def test_failure_event_triggers_ci_healer_with_correct_context(monkeypatch):
         headers={
             "Content-Type": "application/json",
             "X-GitHub-Event": "workflow_run",
+            "X-GitHub-Delivery": "failure-1",
             "X-Hub-Signature-256": _signature("secret123", raw_payload),
         },
     )
