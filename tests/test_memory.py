@@ -18,6 +18,7 @@ from core.memory import (
     get_recent_tasks,
     add_context,
     get_recent_context,
+    get_voice_output,
     prune_old_conversations,
     add_or_update_pattern,
     get_patterns,
@@ -25,6 +26,7 @@ from core.memory import (
     decay_patterns,
     delete_pattern,
     delete_all_patterns,
+    set_voice_output,
 )
 
 
@@ -68,6 +70,15 @@ def test_add_and_get_context(db_session):
     ctx = get_recent_context("app_state", limit=5, session=db_session)
     assert len(ctx) >= 1
     assert any(c.data.get("app") == "Terminal" for c in ctx)
+
+
+def test_voice_output_preference_defaults_false_and_can_be_enabled(db_session):
+    assert get_voice_output("user1", session=db_session) is False
+
+    pref = set_voice_output("user1", True, session=db_session)
+
+    assert pref.voice_output_enabled is True
+    assert get_voice_output("user1", session=db_session) is True
 
 
 def test_prune_old_conversations(db_session):

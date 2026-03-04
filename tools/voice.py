@@ -3,6 +3,7 @@ GEDOS Voice — local transcription of Telegram voice messages using Whisper.
 """
 
 import logging
+from io import BytesIO
 from pathlib import Path
 from typing import Optional, Union
 
@@ -53,3 +54,39 @@ def transcribe_audio(audio_path: Union[str, Path], language_hint: Optional[str] 
         if "ffmpeg" in error_msg.lower() or "not found" in error_msg.lower():
             return ("", "FFmpeg not found. Install it: brew install ffmpeg (macOS)")
         return ("", f"Transcription failed: {error_msg[:200]}")
+
+
+def synthesize_speech(text: str, language: str) -> Optional[bytes]:
+    """
+    Synthesize Telegram-compatible voice output using gTTS + pydub.
+
+    Args:
+        text: Text to convert into speech.
+        language: Language code accepted by gTTS (e.g. en, pt, es).
+
+    Returns:
+        OGG audio bytes on success, otherwise None.
+    """
+    if not text or not text.strip():
+        return None
+
+    try:
+        from gtts import gTTS
+        from pydub import AudioSegment
+    except ImportError:
+        logger.warning("Voice output dependencies not installed")
+        return None
+
+    normalized_language = (language or "en").strip().lower()[:2] or "en"
+    mp3_buffer = BytesIO()
+    ogg_buffer = BytesIO()
+
+    try:
+        gTTS(text=text.strip(), lang=normalized_language).write_to_fp(mp3_buffer)
+        mp3_buffer.seek(0)
+        audio = AudioSegment.from_file(mp3_buffer, format="mp3")
+        audio.export(ogg_buffer, format="ogg", codec="libopus")
+        return ogg_buffer.getvalue()
+    except Exception:
+        logger.exception("Voice synthesis failed")
+        return None

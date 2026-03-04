@@ -30,6 +30,11 @@ web:
   headless: true
   timeout: 30000
 
+voice:
+  output_enabled: false
+  max_text_length: 500
+  provider: "gtts"
+
 github:
   webhook_port: 9876
   auto_fix: true

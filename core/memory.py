@@ -54,7 +54,9 @@ class Context(Base):
     __tablename__ = "context"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)  # app_state, screen_content, learning
+    voice_output_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -198,6 +200,24 @@ def init_db(engine=None):
         pass
     try:
         with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE context ADD COLUMN user_id VARCHAR(64)"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_context_user_id ON context (user_id)"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE context ADD COLUMN voice_output_enabled BOOLEAN"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
             conn.execute(text("ALTER TABLE patterns ADD COLUMN suppressed BOOLEAN DEFAULT 0"))
             conn.commit()
     except Exception:
@@ -216,6 +236,10 @@ def get_session(engine=None) -> Session:
     """Return a new session. Caller should close or use as context manager."""
     if engine is None:
         engine = get_engine()
+    try:
+        init_db(engine)
+    except TypeError:
+        init_db()
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     return SessionLocal()
 
@@ -324,13 +348,24 @@ def get_recent_tasks(limit: int = 20, user_id: Optional[str] = None, session: Op
 # --- Context CRUD ---
 
 
-def add_context(type_name: str, data: dict[str, Any], session: Optional[Session] = None) -> Context:
+def add_context(
+    type_name: str,
+    data: dict[str, Any],
+    session: Optional[Session] = None,
+    user_id: Optional[str] = None,
+    voice_output_enabled: Optional[bool] = None,
+) -> Context:
     """Store context (app state, screen content, learning)."""
     own_session = session is None
     if own_session:
         session = get_session()
     try:
-        c = Context(type=type_name, data=data)
+        c = Context(
+            user_id=str(user_id) if user_id is not None else None,
+            type=type_name,
+            voice_output_enabled=voice_output_enabled,
+            data=data,
+        )
         session.add(c)
         session.commit()
         session.refresh(c)
@@ -365,7 +400,44 @@ def get_user_language(user_id: str, session: Optional[Session] = None) -> Option
 
 def set_user_language(user_id: str, language: str, session: Optional[Session] = None) -> Context:
     """Store language preference for a user."""
-    return add_context("user_language", {"user_id": str(user_id), "language": language}, session=session)
+    return add_context("user_language", {"user_id": str(user_id), "language": language}, session=session, user_id=user_id)
+
+
+def get_voice_output(user_id: str, session: Optional[Session] = None) -> bool:
+    """Return whether voice output is enabled for a user."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        entry = (
+            session.query(Context)
+            .filter(Context.user_id == str(user_id))
+            .filter(Context.voice_output_enabled.is_not(None))
+            .order_by(Context.timestamp.desc())
+            .first()
+        )
+        if entry and entry.voice_output_enabled is not None:
+            return bool(entry.voice_output_enabled)
+        try:
+            from core.config import load_config
+
+            return bool(((load_config().get("voice") or {}).get("output_enabled", False)))
+        except Exception:
+            return False
+    finally:
+        if own_session:
+            session.close()
+
+
+def set_voice_output(user_id: str, enabled: bool, session: Optional[Session] = None) -> Context:
+    """Store voice output preference for a user."""
+    return add_context(
+        "user_voice_output",
+        {"user_id": str(user_id), "voice_output_enabled": bool(enabled)},
+        session=session,
+        user_id=user_id,
+        voice_output_enabled=bool(enabled),
+    )
 
 
 def get_recent_context(type_name: Optional[str] = None, limit: int = 10, session: Optional[Session] = None) -> list[Context]:
