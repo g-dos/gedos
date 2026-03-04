@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta:__legacy__"
+
+[project]
+name = "gedos"
+version = "0.9.11"
+description = "Autonomous AI agent for macOS. Your Mac, working while you're not."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12"
+dependencies = [
+    "python-telegram-bot[job-queue]>=21.0",
+    "atomacos",
+    "pyobjc-framework-ApplicationServices",
+    "pyobjc-framework-Cocoa",
+    "pyautogui",
+    "pyyaml",
+    "python-dotenv",
+    "sqlalchemy",
+    "playwright",
+    "requests",
+    "langgraph",
+    "langchain-core",
+    "anthropic",
+    "openai",
+    "rich",
+    "psutil",
+    "apscheduler>=3.10",
+    "langdetect>=1.0.9",
+    "mcp>=1.0.0",
+    "flask>=3.0.0",
+    "PyGithub>=2.0.0",
+    "gTTS>=2.5.0",
+    "pydub>=0.25.1",
+    "parsedatetime>=2.6",
+    "pytz>=2024.1",
+    "tzlocal>=4.3",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+]
+
+[project.scripts]
+gedos = "gedos:main"
+
+[tool.setuptools]
+py-modules = ["gedos"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gedos*", "core*", "agents*", "interfaces*", "tools*"]
