@@ -11,6 +11,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from core.audit_log import log_action
 from core.config import load_config
 from core.memory import Context, Conversation, Task, get_owner, get_session
 
@@ -159,4 +160,11 @@ def notify(user_id: str, message: str, category: str, priority: str) -> bool:
             delivered = True
         except Exception:
             logger.exception("Proactive sink failed")
+    if delivered:
+        log_action(
+            "proactive_notification",
+            {"category": event.category, "priority": event.priority, "message": event.message},
+            event.user_id,
+            "sent",
+        )
     return delivered

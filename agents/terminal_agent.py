@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.config import get_agent_config
+from core.audit_log import log_action
 from core.security import SecurityError, sanitize_command
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,12 @@ def run_command(
 
     result = _exec_command(command, cwd=cwd, timeout_seconds=t)
     if result.success or retries <= 1 or result.return_code == 127:
+        log_action(
+            "task_executed",
+            {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+            "unknown",
+            "success" if result.success else "failed",
+        )
         return result
 
     if "timed out" in result.stderr.lower() or "execution error" in result.stderr.lower():
@@ -85,7 +92,19 @@ def run_command(
             logger.warning("Retrying command (attempt %d/%d): %s", attempt, retries, command[:80])
             result = _exec_command(command, cwd=cwd, timeout_seconds=t)
             if result.success:
+                log_action(
+                    "task_executed",
+                    {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+                    "unknown",
+                    "success",
+                )
                 return result
+    log_action(
+        "task_executed",
+        {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+        "unknown",
+        "failed",
+    )
     return result
 
 
@@ -129,10 +148,22 @@ def run_shell(
     retries = max_retries if max_retries is not None else cfg.get("max_retries", 1)
     is_safe, reason = sanitize_command(command, cwd=cwd)
     if not is_safe:
+        log_action(
+            "command_blocked",
+            {"command": command, "agent": "terminal", "reason": reason},
+            "unknown",
+            "blocked",
+        )
         raise SecurityError(reason)
 
     result = _exec_shell(command, cwd=cwd, timeout_seconds=t)
     if result.success or retries <= 1:
+        log_action(
+            "task_executed",
+            {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+            "unknown",
+            "success" if result.success else "failed",
+        )
         return result
 
     if "timed out" in result.stderr.lower() or "execution error" in result.stderr.lower():
@@ -140,7 +171,19 @@ def run_shell(
             logger.warning("Retrying shell (attempt %d/%d): %s", attempt, retries, command[:80])
             result = _exec_shell(command, cwd=cwd, timeout_seconds=t)
             if result.success:
+                log_action(
+                    "task_executed",
+                    {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+                    "unknown",
+                    "success",
+                )
                 return result
+    log_action(
+        "task_executed",
+        {"command": command, "agent": "terminal", "cwd": cwd or "", "return_code": result.return_code},
+        "unknown",
+        "failed",
+    )
     return result
 
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from core.audit_log import log_action
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ALLOWED_EXECUTABLES = {
@@ -116,16 +118,25 @@ def sanitize_command(command: str, cwd: Optional[str] = None) -> tuple[bool, str
     Validate a command against a strict allowlist and blocked token set.
     Returns (is_safe, reason).
     """
+    def _blocked(reason: str) -> tuple[bool, str]:
+        log_action(
+            "command_blocked",
+            {"command": command, "reason": reason, "agent": "security"},
+            "unknown",
+            "blocked",
+        )
+        return False, reason
+
     if not command or not command.strip():
-        return False, "Empty command."
+        return _blocked("Empty command.")
 
     if len(command) > MAX_COMMAND_LENGTH:
-        return False, f"command too long (max {MAX_COMMAND_LENGTH} chars)"
+        return _blocked(f"command too long (max {MAX_COMMAND_LENGTH} chars)")
 
     if "\x00" in command:
-        return False, "null byte detected"
+        return _blocked("null byte detected")
     if any(ord(char) < 32 and char not in ("\t",) for char in command):
-        return False, "non-printable characters detected"
+        return _blocked("non-printable characters detected")
 
     cmd = command.strip()
 
@@ -134,54 +145,61 @@ def sanitize_command(command: str, cwd: Optional[str] = None) -> tuple[bool, str
         if pattern in low.replace(" ", ""):
             reason = f"Blocked dangerous pattern: {pattern}"
             logger.warning("%s in command: %s", reason, cmd[:80])
-            return False, reason
+            return _blocked(reason)
 
     for operator in BLOCKED_SUBSTRINGS:
         if operator in cmd:
             reason = f"Blocked dangerous token: {operator}"
             logger.warning("%s in command: %s", reason, cmd[:80])
-            return False, reason
+            return _blocked(reason)
 
     try:
         parts = shlex.split(cmd)
     except ValueError as exc:
         reason = f"Command parsing failed: {exc}"
         logger.warning("%s", reason)
-        return False, reason
+        return _blocked(reason)
 
     if not parts:
-        return False, "Empty command."
+        return _blocked("Empty command.")
 
     executable = parts[0]
     if executable not in get_allowed_executables():
         reason = f"Executable not allowed: {executable}"
         logger.warning("%s", reason)
-        return False, reason
+        return _blocked(reason)
 
     for token in parts:
         if token in BLOCKED_TOKEN_OPERATORS:
             reason = f"Blocked dangerous token: {token}"
             logger.warning("%s in command: %s", reason, cmd[:80])
-            return False, reason
+            return _blocked(reason)
         if token.lower() in BLOCKED_TERMS:
             reason = f"Blocked dangerous token: {token}"
             logger.warning("%s in command: %s", reason, cmd[:80])
-            return False, reason
+            return _blocked(reason)
 
     if executable == "pip":
-        return _validate_pip_command(parts, cmd)
+        safe, reason = _validate_pip_command(parts, cmd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable == "git":
-        return _validate_git_command(parts, cmd)
+        safe, reason = _validate_git_command(parts, cmd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable in {"python", "python3"}:
-        return _validate_python_command(parts, cmd)
+        safe, reason = _validate_python_command(parts, cmd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable == "cat":
-        return _validate_cat_command(parts, cmd, cwd)
+        safe, reason = _validate_cat_command(parts, cmd, cwd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable == "find":
-        return _validate_find_command(parts, cmd, cwd)
+        safe, reason = _validate_find_command(parts, cmd, cwd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable in {"cp", "mv"}:
-        return _validate_copy_move_command(parts, cmd, cwd)
+        safe, reason = _validate_copy_move_command(parts, cmd, cwd)
+        return (safe, reason) if safe else _blocked(reason)
     if executable == "ls":
-        return _validate_ls_command(parts, cmd, cwd)
+        safe, reason = _validate_ls_command(parts, cmd, cwd)
+        return (safe, reason) if safe else _blocked(reason)
 
     return True, "ok"
 

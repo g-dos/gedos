@@ -17,6 +17,7 @@ _T: dict[str, dict[str, str]] = {
     "usage_github": {"en": "Usage: /github status|connect", "pt": "Uso: /github status|connect", "es": "Uso: /github status|connect"},
     "usage_forget": {"en": "Usage: /forget <number>|all", "pt": "Uso: /forget <número>|all", "es": "Uso: /forget <número>|all"},
     "usage_voice": {"en": "Usage: /voice on|off|status", "pt": "Uso: /voice on|off|status", "es": "Uso: /voice on|off|status"},
+    "usage_auditlog": {"en": "Usage: /auditlog", "pt": "Uso: /auditlog", "es": "Uso: /auditlog"},
     "usage_checklist": {"en": "Usage: /checklist", "pt": "Uso: /checklist", "es": "Uso: /checklist"},
     "usage_permissions": {"en": "Usage: /permissions [default|custom|full|full confirm]", "pt": "Uso: /permissions [default|custom|full|full confirm]", "es": "Uso: /permissions [default|custom|full|full confirm]"},
     "input_too_long": {"en": "Input too long. Max {max} characters.", "pt": "Entrada muito longa. Máx. {max} caracteres.", "es": "Entrada demasiado larga. Máx. {max} caracteres."},
@@ -190,6 +191,9 @@ _T: dict[str, dict[str, str]] = {
     "github_ci_fix_failure": {"en": "❌ CI failure on {repo}/{branch}\nError: {error_summary}\nCould not auto-fix. Review needed.", "pt": "❌ Falha de CI em {repo}/{branch}\nErro: {error_summary}\nNão foi possível corrigir automaticamente. Revisão necessária.", "es": "❌ Fallo de CI en {repo}/{branch}\nError: {error_summary}\nNo se pudo corregir automáticamente. Se necesita revisión."},
     "checklist_title": {"en": "🔍 Gedos Setup Checklist", "pt": "🔍 Checklist de Setup do Gedos", "es": "🔍 Checklist de Setup de Gedos"},
     "checklist_footer": {"en": "{passed}/{total} checks passing", "pt": "{passed}/{total} verificações aprovadas", "es": "{passed}/{total} verificaciones aprobadas"},
+    "auditlog_empty": {"en": "No audit log entries yet.", "pt": "Ainda não há entradas no log de auditoria.", "es": "Todavía no hay entradas en el log de auditoría."},
+    "auditlog_title": {"en": "📜 Audit log (last {n}):", "pt": "📜 Log de auditoria (últimos {n}):", "es": "📜 Log de auditoría (últimos {n}):"},
+    "auditlog_line": {"en": "{time} | {action} | {result}", "pt": "{time} | {action} | {result}", "es": "{time} | {action} | {result}"},
 }
 
 

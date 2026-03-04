@@ -11,6 +11,7 @@ import threading
 from typing import Optional
 from uuid import uuid4
 
+from core.audit_log import log_action
 from core.memory import (
     add_or_update_pattern,
     decay_patterns,
@@ -126,18 +127,36 @@ def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -
     pattern, confirmed = _upsert_pattern(str(user_id), "time_based", f"time:{weekday}@{hour}", action, seen_at)
     if confirmed:
         newly_confirmed.append(pattern)
+        log_action(
+            "pattern_detected",
+            {"type": "time_based", "trigger": pattern.trigger, "action": pattern.action},
+            str(user_id),
+            "confirmed",
+        )
 
     current_app = " ".join(str(context.get("current_app") or "").strip().split())
     if current_app:
         pattern, confirmed = _upsert_pattern(str(user_id), "context_based", f"app:{current_app.lower()}", action, seen_at)
         if confirmed:
             newly_confirmed.append(pattern)
+            log_action(
+                "pattern_detected",
+                {"type": "context_based", "trigger": pattern.trigger, "action": pattern.action},
+                str(user_id),
+                "confirmed",
+            )
 
     preceding_task = _normalize_action(str(context.get("preceding_task") or ""))
     if preceding_task and preceding_task != action:
         pattern, confirmed = _upsert_pattern(str(user_id), "workflow_based", f"after:{preceding_task}", action, seen_at)
         if confirmed:
             newly_confirmed.append(pattern)
+            log_action(
+                "pattern_detected",
+                {"type": "workflow_based", "trigger": pattern.trigger, "action": pattern.action},
+                str(user_id),
+                "confirmed",
+            )
     return newly_confirmed
 
 

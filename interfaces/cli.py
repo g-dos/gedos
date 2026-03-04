@@ -19,6 +19,8 @@ from core.config import (
     update_config,
     write_env_value,
 )
+from core.audit_log import read_recent_actions
+from core.audit_log import log_action
 from core.llm import complete
 from core.memory import (
     add_context,
@@ -390,6 +392,7 @@ def _help_text() -> str:
         "  /permissions            View and edit permission level\n"
         "  /config                 Open GEDOS.md in editor\n"
         "  /checklist              Validate local Gedos setup\n"
+        "  /auditlog               Show last 20 audit log entries\n"
         "  /ping                   Health check\n"
         "  /clear                  Clear screen\n"
         "  /exit                   Quit Gedos\n"
@@ -457,7 +460,14 @@ def _set_permission(level: str) -> str:
 def _confirm_cli_permission(detail: str) -> bool:
     """Prompt once for a confirm-style permission in CLI mode."""
     answer = input(f"{detail}\n[A] Allow once  [D] Deny > ").strip().lower()
-    return answer in {"a", "allow", "y", "yes"}
+    allowed = answer in {"a", "allow", "y", "yes"}
+    log_action(
+        "permission_requested",
+        {"detail": detail},
+        CLI_USER_ID,
+        "allow" if allowed else "deny",
+    )
+    return allowed
 
 
 def _format_patterns() -> str:
@@ -570,6 +580,26 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         return ("pong\nMCP: available (run with --mcp)", voice_enabled)
     if text == "/checklist":
         return (format_setup_checklist(), voice_enabled)
+    if text == "/auditlog":
+        entries = read_recent_actions(limit=20)
+        if not entries:
+            return ("No audit log entries yet.", voice_enabled)
+        lines = ["📜 Audit log (last 20):"]
+        for entry in entries:
+            timestamp = str(entry.get("timestamp") or "?")
+            action = str(entry.get("action") or "unknown")
+            result = str(entry.get("result") or "unknown")
+            details = entry.get("details") or {}
+            details_text = ""
+            if isinstance(details, dict):
+                command_value = details.get("command")
+                reason_value = details.get("reason")
+                if command_value:
+                    details_text = f" | {str(command_value)[:80]}"
+                elif reason_value:
+                    details_text = f" | {str(reason_value)[:80]}"
+            lines.append(f"{timestamp} | {action} | {result}{details_text}")
+        return ("\n".join(lines), voice_enabled)
     if text == "/clear":
         subprocess.run(["clear"], check=False)
         return ("", voice_enabled)

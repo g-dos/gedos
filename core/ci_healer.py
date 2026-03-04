@@ -20,6 +20,7 @@ import requests
 from github import Github
 
 from agents.terminal_agent import run_command
+from core.audit_log import log_action
 from core.config import load_config
 from core.llm import complete
 from core.memory import Conversation, get_session, get_user_language, init_db as memory_init_db
@@ -384,9 +385,26 @@ def _notify_user(message: str) -> None:
 
 def handle_ci_failure(context: CIFailureContext) -> None:
     """Run the self-healing flow for a failed CI workflow."""
+    log_action(
+        "ci_heal_triggered",
+        {
+            "repo": context.repo_full_name,
+            "branch": context.branch,
+            "workflow": context.workflow_name,
+            "commit": context.commit_sha,
+        },
+        "system",
+        "started",
+    )
     github_cfg = _github_config()
     if not github_cfg["auto_fix"]:
         logger.info("GitHub CI auto-fix is disabled.")
+        log_action(
+            "ci_heal_triggered",
+            {"repo": context.repo_full_name, "branch": context.branch, "workflow": context.workflow_name},
+            "system",
+            "skipped_auto_fix_disabled",
+        )
         return
 
     try:
@@ -418,6 +436,19 @@ def handle_ci_failure(context: CIFailureContext) -> None:
         pr_number: Optional[int] = None
         if github_cfg["auto_pr"]:
             pr_number, pr_url = _create_pr(repo, repo_dir, context, failure)
+        log_action(
+            "ci_heal_triggered",
+            {
+                "repo": context.repo_full_name,
+                "branch": context.branch,
+                "workflow": context.workflow_name,
+                "error_summary": failure.error_type,
+                "pr_number": pr_number,
+                "pr_url": pr_url,
+            },
+            "system",
+            "success",
+        )
 
         message = t(
             "github_ci_fix_success",
@@ -432,6 +463,12 @@ def handle_ci_failure(context: CIFailureContext) -> None:
         _notify_user(message)
     except SecurityError as exc:
         logger.warning("CI healer blocked by security policy: %s", exc)
+        log_action(
+            "ci_heal_triggered",
+            {"repo": context.repo_full_name, "branch": context.branch, "reason": str(exc)},
+            "system",
+            "blocked",
+        )
         if github_cfg["notify_on_failure"]:
             if str(exc) == _UNSAFE_FIX_MESSAGE:
                 _notify_user(str(exc))
@@ -449,6 +486,12 @@ def handle_ci_failure(context: CIFailureContext) -> None:
                 )
     except Exception as exc:
         logger.exception("CI healer failed")
+        log_action(
+            "ci_heal_triggered",
+            {"repo": context.repo_full_name, "branch": context.branch, "error": str(exc)},
+            "system",
+            "failed",
+        )
         if github_cfg["notify_on_failure"]:
             chat_id = _latest_telegram_chat_id()
             lang = _latest_telegram_language(chat_id)

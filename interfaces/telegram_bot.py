@@ -26,6 +26,8 @@ from telegram.ext import (
 )
 
 from core.config import get_gedos_md_path, get_telegram_token, pilot_enabled, load_config, update_config
+from core.audit_log import read_recent_actions
+from core.audit_log import log_action
 from core.copilot_context import analyze_context, get_copilot_sensitivity_seconds, publish_hints
 from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
@@ -362,12 +364,26 @@ async def _prompt_permission_confirmation(update: Update, lang: str, detail: str
     uid = _user_id(update)
     if uid is None or not update.message:
         return False
+    log_action(
+        "permission_requested",
+        {"command": detail},
+        str(uid),
+        "pending",
+    )
     await update.message.reply_text(t("permission_request_confirm", lang, detail=detail))
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     _pending_destructive_decision[uid] = future
     try:
-        return bool(await asyncio.wait_for(future, timeout=300.0))
+        allowed = bool(await asyncio.wait_for(future, timeout=300.0))
+        log_action(
+            "permission_requested",
+            {"command": detail},
+            str(uid),
+            "allow" if allowed else "deny",
+        )
+        return allowed
     except asyncio.TimeoutError:
+        log_action("permission_requested", {"command": detail}, str(uid), "timeout")
         return False
     finally:
         _pending_destructive_decision.pop(uid, None)
@@ -1101,6 +1117,33 @@ async def cmd_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message or _ignore_if_unauthorized(update):
         return
     await update.message.reply_text(format_setup_checklist())
+
+
+async def cmd_auditlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the latest JSON audit log entries."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update)
+    entries = read_recent_actions(limit=20)
+    if not entries:
+        await update.message.reply_text(t("auditlog_empty", lang))
+        return
+    lines = [t("auditlog_title", lang, n=20)]
+    for entry in entries:
+        timestamp = str(entry.get("timestamp") or "?")
+        action = str(entry.get("action") or "unknown")
+        result = str(entry.get("result") or "unknown")
+        line = t("auditlog_line", lang, time=timestamp, action=action, result=result)
+        details = entry.get("details") or {}
+        if isinstance(details, dict):
+            command_value = details.get("command")
+            reason_value = details.get("reason")
+            if command_value:
+                line += f" | {str(command_value)[:80]}"
+            elif reason_value:
+                line += f" | {str(reason_value)[:80]}"
+        lines.append(line)
+    await update.message.reply_text("\n".join(lines[:21]))
 
 
 async def cmd_github(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1912,6 +1955,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("deletedata", cmd_deletedata))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("checklist", cmd_checklist))
+    app.add_handler(CommandHandler("auditlog", cmd_auditlog))
     app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("owner", cmd_owner))
     app.add_handler(CommandHandler("yes", cmd_yes))
