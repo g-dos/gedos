@@ -1,10 +1,13 @@
 """Smoke tests for core.memory (in-memory SQLite)."""
 
+from datetime import timedelta
+
 import pytest
 from core.memory import (
     Conversation,
     Task,
     Context,
+    Pattern,
     get_engine,
     init_db,
     get_session,
@@ -16,13 +19,19 @@ from core.memory import (
     add_context,
     get_recent_context,
     prune_old_conversations,
+    add_or_update_pattern,
+    get_patterns,
+    increment_pattern,
+    decay_patterns,
+    delete_pattern,
+    delete_all_patterns,
 )
 
 
 @pytest.fixture()
-def db_session():
+def db_session(tmp_path):
     """In-memory SQLite for each test."""
-    engine = get_engine(":memory:")
+    engine = get_engine(str(tmp_path / "memory.sqlite"))
     init_db(engine)
     from sqlalchemy.orm import sessionmaker
     session = sessionmaker(bind=engine, expire_on_commit=False)()
@@ -65,3 +74,57 @@ def test_prune_old_conversations(db_session):
     add_conversation("user1", "old msg", session=db_session)
     deleted = prune_old_conversations(retention_days=0, session=db_session)
     assert deleted >= 0
+
+
+def test_pattern_crud_and_decay(db_session):
+    pattern = add_or_update_pattern(
+        {
+            "id": "pattern-1",
+            "user_id": "user1",
+            "type": "time_based",
+            "trigger": "time:monday@09:00",
+            "action": "git pull",
+            "occurrences": 2,
+        },
+        session=db_session,
+    )
+    assert pattern.active is False
+
+    updated = increment_pattern("pattern-1", session=db_session)
+    assert updated is not None
+    assert updated.occurrences == 3
+    assert updated.active is True
+
+    patterns = get_patterns("user1", session=db_session)
+    assert len(patterns) == 1
+    assert patterns[0].action == "git pull"
+
+    updated.last_seen = updated.last_seen - timedelta(days=31)
+    db_session.commit()
+    changed = decay_patterns("user1", session=db_session)
+    assert changed == 1
+
+    deleted = delete_pattern("pattern-1", "user1", session=db_session)
+    assert deleted is True
+    assert get_patterns("user1", session=db_session) == []
+
+
+def test_delete_all_patterns_also_removes_pattern_rows(db_session):
+    add_task("task", user_id="user1", session=db_session)
+    add_or_update_pattern(
+        {
+            "id": "pattern-2",
+            "user_id": "user1",
+            "type": "workflow_based",
+            "trigger": "after:pytest",
+            "action": "git commit",
+            "occurrences": 3,
+            "active": True,
+        },
+        session=db_session,
+    )
+
+    deleted = delete_all_patterns("user1", session=db_session)
+
+    assert deleted >= 2
+    assert db_session.query(Pattern).filter(Pattern.user_id == "user1").count() == 0

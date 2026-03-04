@@ -1,5 +1,7 @@
 """Smoke tests for core.orchestrator routing logic."""
 
+import core.behavior_tracker as behavior_tracker
+
 from core.orchestrator import _route_task, run_task
 
 
@@ -31,3 +33,16 @@ def test_run_task_terminal():
     assert result["success"] is True
     assert result["agent_used"] == "terminal"
     assert "smoke_test" in result["result"]
+
+
+def test_run_task_observes_successful_task(monkeypatch):
+    calls = []
+    monkeypatch.setattr("core.task_planner._is_multi_step_task", lambda task: False)
+    monkeypatch.setattr("core.orchestrator.run_single_step_task", lambda task, language=None: {"success": True, "result": "ok", "agent_used": "terminal"})
+    monkeypatch.setattr(behavior_tracker, "start_background_tracker", lambda: None)
+    monkeypatch.setattr(behavior_tracker, "observe", lambda task, user_id, context: calls.append((task, user_id, context)))
+
+    result = run_task("echo learned", user_id="123", context={"current_app": "Terminal"})
+
+    assert result["success"] is True
+    assert calls == [("echo learned", "123", {"current_app": "Terminal"})]

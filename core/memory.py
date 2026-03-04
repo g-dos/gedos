@@ -95,6 +95,22 @@ class AllowedChat(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class Pattern(Base):
+    """Learned behavioral patterns for a specific user."""
+
+    __tablename__ = "patterns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    occurrences: Mapped[int] = mapped_column(default=1)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    confidence: Mapped[float] = mapped_column(default=0.1)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 def get_engine(database_path: Optional[str] = None):
     """Create SQLite engine. Uses config if database_path is None."""
     path = _resolve_database_path(database_path)
@@ -169,6 +185,12 @@ def init_db(engine=None):
     try:
         with engine.connect() as conn:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_user_id ON tasks (user_id)"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_patterns_user_id ON patterns (user_id)"))
             conn.commit()
     except Exception:
         pass
@@ -565,6 +587,7 @@ def delete_all_patterns(user_id: str, session: Optional[Session] = None) -> int:
         deleted = 0
         deleted += session.query(Conversation).filter(Conversation.user_id == user_key).delete()
         deleted += session.query(Task).filter(Task.user_id == user_key).delete()
+        deleted += session.query(Pattern).filter(Pattern.user_id == user_key).delete()
         for entry in session.query(Context).all():
             data = entry.data or {}
             if data.get("user_id") == user_key:
@@ -572,6 +595,147 @@ def delete_all_patterns(user_id: str, session: Optional[Session] = None) -> int:
                 deleted += 1
         session.commit()
         return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def _pattern_confidence(occurrences: int) -> float:
+    """Calculate confidence from occurrence count."""
+    return min(max(int(occurrences), 0) / 10.0, 1.0)
+
+
+def _trim_active_patterns(user_id: str, session: Session) -> None:
+    """Keep at most 50 active patterns for a user."""
+    active_patterns = list(
+        session.query(Pattern)
+        .filter(Pattern.user_id == str(user_id), Pattern.active == True)
+        .order_by(Pattern.confidence.desc(), Pattern.last_seen.desc())
+        .all()
+    )
+    for stale in active_patterns[50:]:
+        stale.active = False
+
+
+def add_or_update_pattern(pattern_data: dict[str, Any], session: Optional[Session] = None) -> Pattern:
+    """Upsert a learned pattern by user_id + trigger + action."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        user_id = str(pattern_data["user_id"])
+        trigger = str(pattern_data["trigger"])
+        action = str(pattern_data["action"])
+        existing = (
+            session.query(Pattern)
+            .filter(Pattern.user_id == user_id, Pattern.trigger == trigger, Pattern.action == action)
+            .first()
+        )
+        if existing:
+            existing.type = str(pattern_data.get("type") or existing.type)
+            existing.occurrences = int(pattern_data.get("occurrences") or existing.occurrences)
+            existing.last_seen = pattern_data.get("last_seen") or existing.last_seen
+            existing.confidence = float(pattern_data.get("confidence") or _pattern_confidence(existing.occurrences))
+            existing.active = bool(pattern_data.get("active", existing.occurrences >= 3))
+            pattern = existing
+        else:
+            pattern = Pattern(
+                id=str(pattern_data["id"]),
+                user_id=user_id,
+                type=str(pattern_data["type"]),
+                trigger=trigger,
+                action=action,
+                occurrences=int(pattern_data.get("occurrences", 1)),
+                last_seen=pattern_data.get("last_seen") or datetime.utcnow(),
+                confidence=float(pattern_data.get("confidence", _pattern_confidence(int(pattern_data.get("occurrences", 1))))),
+                active=bool(pattern_data.get("active", int(pattern_data.get("occurrences", 1)) >= 3)),
+            )
+            session.add(pattern)
+        _trim_active_patterns(user_id, session)
+        session.commit()
+        session.refresh(pattern)
+        return pattern
+    finally:
+        if own_session:
+            session.close()
+
+
+def get_patterns(user_id: str, session: Optional[Session] = None) -> list[Pattern]:
+    """Return active patterns for a user ordered by confidence."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        return list(
+            session.query(Pattern)
+            .filter(Pattern.user_id == str(user_id), Pattern.active == True)
+            .order_by(Pattern.confidence.desc(), Pattern.last_seen.desc())
+            .all()
+        )
+    finally:
+        if own_session:
+            session.close()
+
+
+def increment_pattern(pattern_id: str, session: Optional[Session] = None) -> Optional[Pattern]:
+    """Increase a pattern occurrence count and refresh confidence."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        pattern = session.get(Pattern, str(pattern_id))
+        if not pattern:
+            return None
+        pattern.occurrences += 1
+        pattern.last_seen = datetime.utcnow()
+        pattern.confidence = _pattern_confidence(pattern.occurrences)
+        pattern.active = pattern.occurrences >= 3
+        _trim_active_patterns(pattern.user_id, session)
+        session.commit()
+        session.refresh(pattern)
+        return pattern
+    finally:
+        if own_session:
+            session.close()
+
+
+def decay_patterns(user_id: str, session: Optional[Session] = None) -> int:
+    """Apply confidence decay to inactive patterns and remove weak patterns."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        threshold = datetime.utcnow() - timedelta(days=30)
+        changed = 0
+        patterns = list(session.query(Pattern).filter(Pattern.user_id == str(user_id)).all())
+        for pattern in patterns:
+            if pattern.last_seen > threshold:
+                continue
+            pattern.confidence = max(pattern.confidence - 0.1, 0.0)
+            pattern.active = pattern.confidence >= 0.1 and pattern.occurrences >= 3
+            changed += 1
+            if pattern.confidence < 0.1:
+                session.delete(pattern)
+        if changed:
+            session.commit()
+        return changed
+    finally:
+        if own_session:
+            session.close()
+
+
+def delete_pattern(pattern_id: str, user_id: str, session: Optional[Session] = None) -> bool:
+    """Delete a specific pattern belonging to a user."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        pattern = session.get(Pattern, str(pattern_id))
+        if not pattern or pattern.user_id != str(user_id):
+            return False
+        session.delete(pattern)
+        session.commit()
+        return True
     finally:
         if own_session:
             session.close()
