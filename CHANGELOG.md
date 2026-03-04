@@ -2,6 +2,23 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.10] — 2026-03
+
+### Added
+- **Natural language schedule parsing**: Gedos now handles 20+ scheduling expressions in plain English, including daily, weekdays, weekly, interval, one-time, and multi-time patterns
+- **Schedule history**: added `/schedule history` so users can review the last 5 completed scheduled task runs
+- **Expanded schedule regression coverage**: added focused parser and UX tests for natural-language cron behavior and command responses
+
+### Enhanced
+- **Timezone auto-detection and storage**: Gedos now auto-detects the local timezone on first scheduling use and stores it per user for future schedule handling
+- **Rich `/schedule` confirmation**: schedule creation now shows the task, recurrence, timezone, and next run time in a polished confirmation block
+- **Redesigned `/schedules` output**: active schedules are now shown in a cleaner, demo-quality block layout with upcoming run times
+- **Removed schedule clarity**: `/unschedule` now confirms the exact schedule rule and task that were removed
+- **`daily 9am` fixed**: the previously broken shorthand format now parses correctly in the natural-language path
+
+### Validation
+- **Test suite**: all tests pass after the natural-language cron polish (`193 passed`)
+
 ## [0.9.9] — 2026-03
 
 ### Added

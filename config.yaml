@@ -2,7 +2,7 @@
 # Secrets (e.g. TELEGRAM_BOT_TOKEN) come from .env
 # Version: Semver x.y.z (major.minor.patch)
 
-version: 0.9.9
+version: 0.9.10
 
 telegram:
   bot_token: ""  # Loaded from env TELEGRAM_BOT_TOKEN
