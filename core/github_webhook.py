@@ -23,6 +23,8 @@ _WEBHOOK_STATE: dict[str, Any] = {"running": False, "port": 9876}
 _RECENT_DELIVERIES: deque[str] = deque(maxlen=100)
 _RECENT_DELIVERY_SET: set[str] = set()
 _REQUEST_TIMESTAMPS: deque[datetime] = deque()
+_SAFE_REPO_RE = r"^[A-Za-z0-9._/-]{1,200}$"
+_SAFE_BRANCH_RE = r"^[A-Za-z0-9._/-]{1,100}$"
 
 
 def _webhook_port() -> int:
@@ -79,6 +81,30 @@ def _build_failure_context(payload: dict) -> CIFailureContext:
         run_id=workflow_run.get("id"),
         html_url=workflow_run.get("html_url"),
     )
+
+
+def _identifiers_are_safe(payload: dict) -> bool:
+    """Validate repo and branch identifiers before handing them to the healer."""
+    import re
+
+    workflow_run = payload.get("workflow_run") or {}
+    repository = payload.get("repository") or {}
+    repo_full_name = str(repository.get("full_name") or "")
+    branch = str(workflow_run.get("head_branch") or repository.get("default_branch") or "main")
+
+    if not re.fullmatch(_SAFE_REPO_RE, repo_full_name):
+        logger.warning("Rejecting unsafe repo identifier: %s", repo_full_name[:200])
+        return False
+    if ".." in repo_full_name or repo_full_name.startswith("/") or repo_full_name.endswith("/") or "//" in repo_full_name:
+        logger.warning("Rejecting path-like repo identifier: %s", repo_full_name[:200])
+        return False
+    if not re.fullmatch(_SAFE_BRANCH_RE, branch):
+        logger.warning("Rejecting unsafe branch identifier: %s", branch[:100])
+        return False
+    if ".." in branch or branch.startswith("/") or branch.endswith("/") or "//" in branch:
+        logger.warning("Rejecting path-like branch identifier: %s", branch[:100])
+        return False
+    return True
 
 
 def _payload_is_fresh(payload: dict) -> bool:
@@ -138,14 +164,16 @@ def create_webhook_app() -> Flask:
             return jsonify({"status": "ignored"}), 200
 
         payload = request.get_json(silent=True) or {}
+        workflow_run = payload.get("workflow_run") or {}
+        if workflow_run.get("conclusion") != "failure":
+            return jsonify({"status": "ignored"}), 200
+        if not _identifiers_are_safe(payload):
+            return jsonify({"status": "invalid identifier"}), 400
         delivery_id = request.headers.get("X-GitHub-Delivery", "")
         if not _remember_delivery(delivery_id):
             return jsonify({"status": "duplicate delivery"}), 409
         if not _payload_is_fresh(payload):
             return jsonify({"status": "stale event"}), 409
-        workflow_run = payload.get("workflow_run") or {}
-        if workflow_run.get("conclusion") != "failure":
-            return jsonify({"status": "ignored"}), 200
 
         context = _build_failure_context(payload)
         if not context.repo_full_name or not context.failure_logs_url:

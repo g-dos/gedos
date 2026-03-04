@@ -124,3 +124,69 @@ def test_rate_limit_returns_429_after_ten_requests_per_minute(monkeypatch):
     )
 
     assert limited.status_code == 429
+
+
+def test_unsafe_repo_name_returns_400(monkeypatch):
+    _reset_webhook_state()
+    app = github_webhook.create_webhook_app()
+    client = app.test_client()
+    now = datetime.now(UTC).isoformat()
+    body = {
+        "repository": {"full_name": "../../../etc/passwd", "default_branch": "main"},
+        "workflow_run": {
+            "conclusion": "failure",
+            "head_branch": "main",
+            "head_sha": "abc123",
+            "name": "CI",
+            "logs_url": "https://example.com/logs",
+            "updated_at": now,
+        },
+    }
+    payload = json.dumps(body).encode("utf-8")
+    monkeypatch.setattr(github_webhook, "_webhook_secret", lambda: "secret123")
+
+    response = client.post(
+        "/webhook",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "workflow_run",
+            "X-GitHub-Delivery": "unsafe-repo",
+            "X-Hub-Signature-256": _signature("secret123", payload),
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_unsafe_branch_name_returns_400(monkeypatch):
+    _reset_webhook_state()
+    app = github_webhook.create_webhook_app()
+    client = app.test_client()
+    now = datetime.now(UTC).isoformat()
+    body = {
+        "repository": {"full_name": "g-dos/gedos", "default_branch": "main"},
+        "workflow_run": {
+            "conclusion": "failure",
+            "head_branch": "main; rm -rf ~",
+            "head_sha": "abc123",
+            "name": "CI",
+            "logs_url": "https://example.com/logs",
+            "updated_at": now,
+        },
+    }
+    payload = json.dumps(body).encode("utf-8")
+    monkeypatch.setattr(github_webhook, "_webhook_secret", lambda: "secret123")
+
+    response = client.post(
+        "/webhook",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "workflow_run",
+            "X-GitHub-Delivery": "unsafe-branch",
+            "X-Hub-Signature-256": _signature("secret123", payload),
+        },
+    )
+
+    assert response.status_code == 400
