@@ -38,6 +38,7 @@ from core.memory import (
     set_permission_level,
 )
 from core.orchestrator import clear_stop, request_stop, run_task_with_langgraph
+from core.setup_checklist import format_setup_checklist
 from core.security import get_command_permission_action
 from core.watchers.idle_watcher import record_user_input
 from tools.voice_output import play_voice_response_locally
@@ -388,6 +389,7 @@ def _help_text() -> str:
         "SYSTEM\n"
         "  /permissions            View and edit permission level\n"
         "  /config                 Open GEDOS.md in editor\n"
+        "  /checklist              Validate local Gedos setup\n"
         "  /ping                   Health check\n"
         "  /clear                  Clear screen\n"
         "  /exit                   Quit Gedos\n"
@@ -566,6 +568,8 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         return (f"Status: {_CLI_TASK_STATUS}\nTask: {_CLI_CURRENT_TASK}", voice_enabled)
     if text == "/ping":
         return ("pong\nMCP: available (run with --mcp)", voice_enabled)
+    if text == "/checklist":
+        return (format_setup_checklist(), voice_enabled)
     if text == "/clear":
         subprocess.run(["clear"], check=False)
         return ("", voice_enabled)

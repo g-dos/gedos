@@ -56,6 +56,7 @@ from core.memory import (
 )
 from interfaces.i18n import t
 from core.orchestrator import clear_stop, is_stop_requested, request_stop, run_task_with_langgraph
+from core.setup_checklist import format_setup_checklist
 from agents.terminal_agent import run_shell, TerminalResult
 from agents.gui_agent import click_button
 from core.security import (
@@ -1095,6 +1096,13 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(t("pong", lang))
 
 
+async def cmd_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run local setup checks and return checklist status."""
+    if not update.message or _ignore_if_unauthorized(update):
+        return
+    await update.message.reply_text(format_setup_checklist())
+
+
 async def cmd_github(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show GitHub webhook status or connection instructions."""
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
@@ -1903,6 +1911,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("deletedata", cmd_deletedata))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_handler(CommandHandler("checklist", cmd_checklist))
     app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("owner", cmd_owner))
     app.add_handler(CommandHandler("yes", cmd_yes))
