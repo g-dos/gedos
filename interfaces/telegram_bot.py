@@ -30,6 +30,7 @@ from core.memory import (
     add_task as memory_add_task,
     delete_pattern,
     delete_all_patterns,
+    get_voice_output,
     get_patterns,
     get_recent_tasks,
     get_owner,
@@ -38,6 +39,7 @@ from core.memory import (
     get_user_language,
     list_allowed_chats,
     remove_allowed_chat,
+    set_voice_output,
     set_owner,
     update_pattern_preferences,
 )
@@ -47,6 +49,7 @@ from agents.terminal_agent import run_shell, TerminalResult
 from agents.gui_agent import click_button
 from core.security import SecurityError, get_allowed_chat_ids, get_pairing_code, is_destructive_command
 from tools.ax_tree import get_ax_tree
+from tools.voice_output import send_voice_response, text_to_speech_safe
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +261,40 @@ def _user_lang(update: Update, text: Optional[str] = None) -> str:
         from tools.language import get_and_update_user_language
         return get_and_update_user_language(str(uid), text)
     return get_user_language(str(uid)) or "en"
+
+
+def _voice_enabled(chat_id: Optional[int]) -> bool:
+    """Return whether voice output is enabled for the given chat."""
+    if chat_id is None:
+        return False
+    return get_voice_output(str(chat_id))
+
+
+def _voice_task_summary(text: str, lang: str) -> str:
+    """Build a concise, speech-safe task completion message."""
+    safe = text_to_speech_safe(text)
+    prefix = t("voice_task_complete", lang)
+    if not safe:
+        return prefix
+    if safe.lower().startswith(prefix.lower()):
+        return safe
+    return f"{prefix} {safe}"
+
+
+async def _maybe_send_voice_response(
+    context: Optional[ContextTypes.DEFAULT_TYPE],
+    chat_id: Optional[int],
+    text: str,
+    lang: str,
+) -> bool:
+    """Send a voice response only when the user enabled voice mode."""
+    if context is None or chat_id is None or not _voice_enabled(chat_id):
+        return False
+    bot = getattr(context, "bot", None)
+    if bot is None:
+        return False
+    await send_voice_response(bot, chat_id, text, lang)
+    return True
 
 
 def _copilot_sensitivity(user_id: int) -> str:
@@ -582,6 +619,35 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(help_text)
 
 
+async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage voice output: on | off | status."""
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
+        return
+    text = update.message.text.strip()
+    lang = _user_lang(update, text)
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+
+    parts = text.split(maxsplit=1)
+    action = parts[1].strip().lower() if len(parts) > 1 else ""
+    if action == "on":
+        set_voice_output(str(chat_id), True)
+        if not await _maybe_send_voice_response(context, chat_id, t("voice_enabled", lang), lang):
+            await update.message.reply_text(t("voice_enabled", lang))
+        return
+    if action == "off":
+        set_voice_output(str(chat_id), False)
+        await update.message.reply_text(t("voice_disabled", lang))
+        return
+    if action == "status":
+        key = "voice_status_on" if _voice_enabled(chat_id) else "voice_status_off"
+        await update.message.reply_text(t(key, lang))
+        return
+    await update.message.reply_text(t("usage_voice", lang))
+
+
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _current_task, _task_status, _task_cancelled
     if not update.message or not update.message.text or _ignore_if_unauthorized(update):
@@ -613,6 +679,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         tree = get_ax_tree(max_buttons=25, max_text_fields=10)
         reply = _format_ax_tree(tree, lang)
         await update.message.reply_text(reply)
+        await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply)
             memory_add_task(description=payload, status="completed", agent_used="gui", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
@@ -634,6 +701,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _task_status = "idle"
             reply = t("clicked_button", lang) if ok else t("button_not_found", lang, button=btn_name)
             await update.message.reply_text(reply)
+            await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
                 memory_add_task(description=payload, status="completed", agent_used="gui", result=reply, user_id=str(chat_id) if chat_id is not None else None)
@@ -659,6 +727,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _task_status = "idle"
         reply = _format_terminal_result(result, lang)
         await update.message.reply_text(reply)
+        await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
@@ -739,6 +808,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(reply) > 4000:
             reply = reply[:4000] + t("truncated_suffix", lang)
         await progress_msg.edit_text(reply)
+        await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
             memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
@@ -966,7 +1036,9 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if uid is not None:
             add_conversation(str(uid), f"[voice] {payload}", None)
 
-        await status_msg.edit_text(t("heard_executing", lang, text=payload))
+        heard_msg = t("heard_executing", lang, text=payload)
+        await status_msg.edit_text(heard_msg)
+        await _maybe_send_voice_response(context, chat_id, heard_msg, lang)
 
         # Treat as /task command
         update.message.text = f"/task {payload}"
@@ -1150,8 +1222,10 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
                 message = t("scheduled_task_completed", lang, task=task, result=result.get("result", t("generic_completed", lang))[:500])
             else:
                 message = t("scheduled_task_failed", lang, task=task, result=result.get("result", t("unknown_error", lang))[:500])
-            
-            await bot.send_message(chat_id=user_id, text=message)
+            if get_voice_output(str(user_id)):
+                await send_voice_response(bot, user_id, _voice_task_summary(message, lang), lang)
+            else:
+                await bot.send_message(chat_id=user_id, text=message)
             
         except Exception as e:
             logger.error(f"Failed to send scheduled task result to user {user_id}: {e}")
@@ -1205,6 +1279,10 @@ async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _send_copilot_suggestion(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str) -> None:
     """Send a Copilot suggestion message to a user."""
+    lang = get_user_language(str(user_id)) or "en"
+    if _voice_enabled(user_id):
+        await send_voice_response(context.bot, user_id, message, lang)
+        return
     await context.bot.send_message(chat_id=user_id, text=message)
 
 
@@ -1325,6 +1403,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(reply) > 4000:
         reply = reply[:4000] + t("truncated_suffix", lang)
     await update.message.reply_text(reply)
+    await _maybe_send_voice_response(context, _chat_id(update), reply, lang)
 
 
 async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1498,6 +1577,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
+    app.add_handler(CommandHandler("voice", cmd_voice))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("github", cmd_github))
     app.add_handler(CommandHandler("owner", cmd_owner))

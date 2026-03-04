@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tools.voice_output import send_voice_response
+from tools.voice_output import send_voice_response, text_to_speech_safe
 
 
 @pytest.mark.asyncio
@@ -30,3 +30,22 @@ async def test_send_voice_response_falls_back_to_text_when_synthesis_fails():
     assert sent_voice is False
     bot.send_chat_action.assert_called_once()
     bot.send_message.assert_awaited_once_with(chat_id=12345, text="Hello world")
+
+
+def test_text_to_speech_safe_strips_markdown_and_truncates():
+    text = """# Title
+
+```python
+print("secret")
+```
+
+**Hello** [world](https://example.com)! 😀
+"""
+
+    cleaned = text_to_speech_safe(text + (" More text." * 200))
+
+    assert "print" not in cleaned
+    assert "**" not in cleaned
+    assert "https://example.com" not in cleaned
+    assert "Hello world!" in cleaned
+    assert len(cleaned) <= 500
