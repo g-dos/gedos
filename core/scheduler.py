@@ -718,3 +718,48 @@ def format_schedule_description(task: ScheduledTask, user_tz: Optional[str] = No
         return f"#{task.id}: Every {_format_days(days)} at {rendered_times} — {task.task_description}"
 
     return f"#{task.id}: {task.frequency} — {task.task_description}"
+
+
+def format_schedule_rule(task: ScheduledTask, user_tz: Optional[str] = None) -> str:
+    """Return only the human-friendly recurrence rule for a task."""
+    description = format_schedule_description(task, user_tz=user_tz)
+    if ": " in description and " — " in description:
+        return description.split(": ", 1)[1].rsplit(" — ", 1)[0]
+    return description
+
+
+def get_next_run_datetime(task: ScheduledTask, user_tz: Optional[str] = None) -> Optional[datetime]:
+    """Return the next scheduled run in the user's local timezone."""
+    scheduler = get_scheduler()
+    prefix = _job_prefix(task.id)
+    candidates: list[datetime] = []
+    for job in scheduler.get_jobs():
+        if job.id == prefix or job.id.startswith(f"{prefix}_"):
+            next_run = getattr(job, "next_run_time", None)
+            if next_run:
+                if next_run.tzinfo is None:
+                    next_run = next_run.replace(tzinfo=UTC)
+                candidates.append(next_run)
+    if not candidates:
+        return None
+    next_utc = min(candidates)
+    tz_name = user_tz or ensure_user_timezone(task.user_id)[0]
+    return next_utc.astimezone(_get_zoneinfo(tz_name))
+
+
+def format_next_run(task: ScheduledTask, user_tz: Optional[str] = None, detailed: bool = False) -> str:
+    """Return a friendly 'next run' string in local timezone."""
+    next_run = get_next_run_datetime(task, user_tz=user_tz)
+    if next_run is None:
+        return "Not scheduled"
+    now_local = datetime.now(next_run.tzinfo or UTC)
+    run_date = next_run.date()
+    if run_date == now_local.date():
+        return f"Today at {_format_12h(next_run.strftime('%H:%M'))}"
+    if run_date == (now_local.date() + timedelta(days=1)):
+        if detailed:
+            return f"Tomorrow, {next_run.strftime('%a %b')} {next_run.day} at {_format_12h(next_run.strftime('%H:%M'))}"
+        return f"Tomorrow at {_format_12h(next_run.strftime('%H:%M'))}"
+    day_label = next_run.strftime("%A" if detailed else "%A")
+    month_day = next_run.strftime("%b")
+    return f"{day_label} {month_day} {next_run.day} at {_format_12h(next_run.strftime('%H:%M'))}"

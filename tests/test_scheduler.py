@@ -2,7 +2,7 @@
 Tests for scheduler: parsing, create, list, delete, trigger schedule.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,6 +11,8 @@ from core.memory import init_db
 from core.scheduler import (
     _parse_natural_time,
     create_schedule,
+    format_next_run,
+    format_schedule_rule,
     get_scheduled_task_by_id,
     list_user_schedules,
     parse_schedule_command,
@@ -147,6 +149,18 @@ class TestSchedulerCRUD:
     def test_remove_nonexistent(self):
         init_db()
         assert remove_schedule(99999) is False
+
+    def test_format_helpers_render_rule_and_next_run(self):
+        init_db()
+        task = create_schedule("test_user_3", "daily", "09:00", "brief me", timezone="UTC")
+        try:
+            assert format_schedule_rule(task, user_tz="UTC") == "Every day at 9:00 AM"
+            fake_next = datetime.now(UTC) + timedelta(days=1)
+            with patch("core.scheduler.get_next_run_datetime", return_value=fake_next):
+                next_run = format_next_run(task, user_tz="UTC")
+            assert next_run.startswith("Tomorrow at")
+        finally:
+            remove_schedule(task.id)
 
 
 class TestSchedulerTrigger:

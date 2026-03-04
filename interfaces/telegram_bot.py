@@ -1168,10 +1168,24 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         from core.scheduler import (
             create_schedule,
             ensure_user_timezone,
-            format_schedule_description,
+            format_next_run,
+            format_schedule_rule,
             parse_schedule_command,
             start_scheduler,
         )
+
+        if text.lower() == "/schedule history":
+            history = [task_entry for task_entry in get_recent_tasks(limit=20, user_id=str(uid)) if task_entry.agent_used == "scheduler"][:5]
+            if not history:
+                await update.message.reply_text("📋 Schedule history (last 5):\nNo completed scheduled runs yet.")
+                return
+            lines = ["📋 Schedule history (last 5):"]
+            for task_entry in history:
+                stamp = task_entry.created_at.strftime("%a %b") + f" {task_entry.created_at.day} at {task_entry.created_at.strftime('%I:%M %p').lstrip('0')}"
+                icon = "✅" if task_entry.status == "completed" else "❌"
+                lines.append(f"{icon} {task_entry.description} — {stamp}")
+            await update.message.reply_text("\n".join(lines))
+            return
         
         # Ensure scheduler is running
         start_scheduler()
@@ -1196,12 +1210,20 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             timezone=user_tz,
         )
 
-        confirm_lines = []
+        rule = format_schedule_rule(task, user_tz=user_tz)
+        next_run = format_next_run(task, user_tz=user_tz, detailed=True)
+        confirm_msg = (
+            "📅 Schedule confirmed:\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Task:      {task.task_description}\n"
+            f"Runs:      {rule}\n"
+            f"Timezone:  {user_tz}\n"
+            f"Next run:  {next_run}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Saved as schedule #{task.id}"
+        )
         if tz_is_new:
-            confirm_lines.append(f"Detected timezone: {user_tz}. Is this correct? [Y/n]")
-        confirm_lines.append(format_schedule_description(task, user_tz=user_tz))
-        confirm_msg = "\n\n".join(confirm_lines)
-        confirm_msg += "\n\n" + t("schedule_id_line", lang, id=task.id)
+            confirm_msg = f"Detected timezone: {user_tz}. Is this correct? [Y/n]\n\n{confirm_msg}"
         await update.message.reply_text(confirm_msg)
         
         logger.info(f"User {uid} created schedule #{task.id}")
@@ -1223,10 +1245,7 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     try:
-        import io
-        from rich.console import Console
-        from rich.table import Table
-        from core.scheduler import ensure_user_timezone, format_schedule_description, list_user_schedules
+        from core.scheduler import ensure_user_timezone, format_next_run, format_schedule_rule, list_user_schedules
 
         user_tz, _ = ensure_user_timezone(str(uid))
         schedules = list_user_schedules(str(uid))
@@ -1235,21 +1254,17 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(t("no_schedules", lang))
             return
 
-        table = Table(title=t("schedules_title", lang), show_header=True, header_style="bold")
-        table.add_column(t("schedules_col_id", lang), style="cyan", width=4)
-        table.add_column(t("schedules_col_when", lang), style="green", width=22)
-        table.add_column(t("schedules_col_task", lang), style="white", max_width=35)
-        table.add_column(t("schedules_col_last_run", lang), style="dim", width=12)
-
+        lines = [f"📅 Active schedules ({len(schedules)}):", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
         for task in schedules:
-            when = format_schedule_description(task, user_tz=user_tz).split(": ", 1)[1].rsplit(" — ", 1)[0]
-            last_run = task.last_run.strftime("%m/%d %H:%M") if task.last_run else "—"
-            table.add_row(str(task.id), when, task.task_description[:35], last_run)
-
-        buf = io.StringIO()
-        Console(file=buf, force_terminal=True, width=78).print(table)
-        msg = buf.getvalue() + "\n" + t("schedules_remove_hint", lang)
-        await update.message.reply_text(msg)
+            lines.append(f"#{task.id}  {format_schedule_rule(task, user_tz=user_tz)}")
+            lines.append(f"    {task.task_description}")
+            lines.append(f"    Next: {format_next_run(task, user_tz=user_tz)}")
+            lines.append("")
+        if lines[-1] == "":
+            lines.pop()
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("/unschedule <id> to remove")
+        await update.message.reply_text("\n".join(lines))
 
     except Exception as e:
         logger.exception("Failed to list schedules")
@@ -1268,7 +1283,7 @@ async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     try:
-        from core.scheduler import remove_schedule, get_scheduled_task_by_id
+        from core.scheduler import format_schedule_rule, remove_schedule, get_scheduled_task_by_id
         
         # Parse task ID from command
         parts = update.message.text.strip().split()
@@ -1293,7 +1308,7 @@ async def cmd_unschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         if remove_schedule(task_id):
-            await update.message.reply_text(t("schedule_removed", lang, id=task_id, task=task.task_description[:50]))
+            await update.message.reply_text(f"✅ Removed: {format_schedule_rule(task)} — {task.task_description[:80]}")
             logger.info(f"User {uid} removed schedule #{task_id}")
         else:
             await update.message.reply_text(t("schedule_remove_failed", lang, id=task_id))
@@ -1316,6 +1331,13 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
         
         # Store conversation
         add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', t("generic_completed", lang))))
+        memory_add_task(
+            description=task,
+            status="completed" if result.get("success", False) else "failed",
+            agent_used="scheduler",
+            result=str(result.get("result", t("generic_completed", lang)))[:1000],
+            user_id=str(user_id),
+        )
         
         # Send result to user via Telegram
         try:

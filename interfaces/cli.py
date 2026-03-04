@@ -361,9 +361,28 @@ def _format_patterns() -> str:
 
 def _handle_schedule_command(text: str) -> str:
     """CLI wrappers for schedule commands."""
-    from core.scheduler import create_schedule, get_scheduled_task_by_id, list_user_schedules, parse_schedule_command, remove_schedule, start_scheduler
+    from core.scheduler import (
+        create_schedule,
+        format_next_run,
+        format_schedule_rule,
+        get_scheduled_task_by_id,
+        list_user_schedules,
+        parse_schedule_command,
+        remove_schedule,
+        start_scheduler,
+    )
 
     start_scheduler()
+    if text == "/schedule history":
+        history = [task for task in get_recent_tasks(limit=20, user_id=CLI_USER_ID) if task.agent_used == "scheduler"][:5]
+        if not history:
+            return "📋 Schedule history (last 5):\nNo completed scheduled runs yet."
+        lines = ["📋 Schedule history (last 5):"]
+        for task in history:
+            stamp = task.created_at.strftime("%a %b") + f" {task.created_at.day} at {task.created_at.strftime('%I:%M %p').lstrip('0')}"
+            icon = "✅" if task.status == "completed" else "❌"
+            lines.append(f"{icon} {task.description} — {stamp}")
+        return "\n".join(lines)
     if text.startswith("/schedule "):
         schedule_data = parse_schedule_command(text)
         if not schedule_data:
@@ -383,7 +402,17 @@ def _handle_schedule_command(text: str) -> str:
         tasks = list_user_schedules(CLI_USER_ID)
         if not tasks:
             return "No active schedules."
-        return "\n".join(f"#{task.id} {task.frequency} {task.schedule_time} {task.task_description}" for task in tasks)
+        lines = [f"📅 Active schedules ({len(tasks)}):", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for task in tasks:
+            lines.append(f"#{task.id}  {format_schedule_rule(task)}")
+            lines.append(f"    {task.task_description}")
+            lines.append(f"    Next: {format_next_run(task)}")
+            lines.append("")
+        if lines[-1] == "":
+            lines.pop()
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("/unschedule <id> to remove")
+        return "\n".join(lines)
     parts = text.split()
     if len(parts) != 2 or not parts[1].isdigit():
         return "Usage: /unschedule <id>"
@@ -391,7 +420,7 @@ def _handle_schedule_command(text: str) -> str:
     if not task or task.user_id != CLI_USER_ID:
         return f"Schedule #{parts[1]} not found."
     removed = remove_schedule(task.id)
-    return f"Removed schedule #{task.id}: {task.task_description}" if removed else f"Failed to remove schedule #{task.id}"
+    return f"✅ Removed: {format_schedule_rule(task)} — {task.task_description}" if removed else f"Failed to remove schedule #{task.id}"
 
 
 def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
