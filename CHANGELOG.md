@@ -2,6 +2,24 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.12] — 2026-03
+
+### Added
+- **Proactive engine**: added a central proactive coordinator with per-user cooldowns, deduplication, and shared delivery sinks for background notifications
+- **`system_watcher`**: added background checks for high CPU, high disk usage, high memory pressure, and long-running quiet processes
+- **`github_watcher`**: added background polling for new issues, new PRs, CI failures, and requested reviews
+- **`idle_watcher`**: added 10-minute idle detection plus end-of-day suggestions
+- **`morning_briefing`**: added daily startup briefings based on learned start times with a 9:00 AM fallback
+- **Proactive regression coverage**: added mocked tests covering proactive cooldown, deduplication, and all watcher trigger paths
+
+### Enhanced
+- **Copilot delivery path**: screen-based Copilot suggestions now flow through the proactive engine instead of bypassing it
+- **Custom permissions**: users can now choose allow/confirm/block per category for terminal, web, filesystem, package install, and GitHub operations
+- **Copilot polling cadence**: sensitivity cooldowns are now 10s (high), 30s (medium), and 120s (low)
+
+### Validation
+- **Test suite**: all tests pass after the proactive engine rollout and coverage expansion (`209 passed`)
+
 ## [0.9.11] — 2026-03
 
 ### Added
