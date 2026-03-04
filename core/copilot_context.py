@@ -10,6 +10,7 @@ from typing import Optional
 
 from core.behavior_tracker import get_active_patterns
 from core.config import load_config
+from core.proactive_engine import notify as proactive_notify
 from interfaces.i18n import t
 from tools.ax_tree import get_ax_tree
 
@@ -50,6 +51,16 @@ def get_copilot_sensitivity_seconds() -> dict[str, float]:
         except (TypeError, ValueError):
             logger.warning("Invalid copilot sensitivity value for %s: %r", key, configured.get(key))
     return values
+
+
+def publish_hints(user_id: str, hints: list[CopilotHint]) -> int:
+    """Route screen-based Copilot hints through the proactive engine."""
+    delivered = 0
+    for hint in hints:
+        priority = "high" if hint.kind == "warning" else "medium"
+        if proactive_notify(str(user_id), hint.message, "screen", priority):
+            delivered += 1
+    return delivered
 
 
 def _minutes_from_trigger(trigger: str, now: datetime) -> Optional[float]:

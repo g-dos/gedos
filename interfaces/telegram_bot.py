@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 from core.config import get_gedos_md_path, get_telegram_token, pilot_enabled, load_config, update_config
-from core.copilot_context import analyze_context, get_copilot_sensitivity_seconds
+from core.copilot_context import analyze_context, get_copilot_sensitivity_seconds, publish_hints
 from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
     add_conversation,
@@ -59,6 +59,7 @@ from core.security import (
     get_pairing_code,
     is_destructive_command,
 )
+from core.watchers.idle_watcher import record_user_input
 from tools.ax_tree import get_ax_tree
 from tools.voice_output import send_voice_response, text_to_speech_safe
 
@@ -265,6 +266,8 @@ def _ignore_if_unauthorized(update: Update, allow_unpaired_start: bool = False) 
     if owner is None:
         return not allow_unpaired_start
     if _is_authorized_chat(chat_id):
+        if chat_id is not None:
+            record_user_input(str(chat_id))
         return False
     if _should_log_unauthorized(chat_id):
         logger.warning("Ignoring unauthorized chat_id=%s", chat_id)
@@ -1685,10 +1688,10 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             if app_name:
                 _last_app_per_user[uid] = app_name
             try:
-                await _send_copilot_suggestion(context, uid, msg)
-                _last_copilot_message_per_user[uid] = msg
-                if hint.kind == "suggestion":
-                    _last_copilot_suggestion_at_per_user[uid] = time()
+                if publish_hints(str(uid), [hint]):
+                    _last_copilot_message_per_user[uid] = msg
+                    if hint.kind == "suggestion":
+                        _last_copilot_suggestion_at_per_user[uid] = time()
             except Exception:
                 pass
     except Exception as e:

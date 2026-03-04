@@ -35,6 +35,7 @@ from core.memory import (
 )
 from core.orchestrator import clear_stop, request_stop, run_task_with_langgraph
 from core.security import get_command_permission_action
+from core.watchers.idle_watcher import record_user_input
 from tools.voice_output import play_voice_response_locally
 
 logger = logging.getLogger(__name__)
@@ -643,6 +644,7 @@ def run_cli(initial_command: Optional[str] = None) -> None:
                 pending_initial = ""
             else:
                 command = input("> ")
+            record_user_input(CLI_USER_ID)
             response, voice_enabled = _run_command(command, voice_enabled)
             if response:
                 print(response)

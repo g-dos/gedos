@@ -8,10 +8,12 @@ __version__ = "0.9.11"
 
 import argparse
 import logging
+import os
 from typing import Optional
 import sys
 import threading
 
+import requests
 from rich.console import Console
 from rich.traceback import install as install_rich_traceback
 
@@ -81,6 +83,56 @@ def _runtime_mode(args, _config: dict) -> str:
     return "telegram"
 
 
+def _register_proactive_sink(active_mode: str) -> None:
+    """Register the best delivery sink for proactive notifications."""
+    from core.proactive_engine import register_sink
+
+    if active_mode == "cli":
+        def _cli_sink(user_id: str, message: str, category: str, priority: str) -> None:
+            console.print(f"\n[cyan]{message}[/]\n> ", end="")
+
+        register_sink("cli", _cli_sink)
+        return
+
+    if active_mode == "telegram":
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        if not token:
+            return
+
+        def _telegram_sink(user_id: str, message: str, category: str, priority: str) -> None:
+            if not str(user_id).isdigit():
+                return
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": int(user_id), "text": message[:4000]},
+                timeout=15,
+            )
+
+        register_sink("telegram", _telegram_sink)
+
+
+def _start_proactive_watchers(active_mode: str) -> None:
+    """Start the proactive engine and all background watcher threads."""
+    if active_mode not in {"cli", "telegram"}:
+        return
+    from core.watchers.github_watcher import run_github_watcher
+    from core.watchers.idle_watcher import run_idle_watcher
+    from core.watchers.morning_briefing import run_morning_briefing_watcher
+    from core.watchers.system_watcher import run_system_watcher
+
+    _register_proactive_sink(active_mode)
+    watchers = (
+        ("gedos-system-watcher", run_system_watcher),
+        ("gedos-github-watcher", run_github_watcher),
+        ("gedos-idle-watcher", run_idle_watcher),
+        ("gedos-morning-briefing", run_morning_briefing_watcher),
+    )
+    for name, target in watchers:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        thread.start()
+    logging.getLogger(__name__).info("✅ Proactive engine started (4 watchers active)")
+
+
 def main() -> int:
     """Initialize logging, parse CLI args, and run the Telegram bot."""
     parser = _build_parser()
@@ -127,6 +179,7 @@ def main() -> int:
         elif active_mode == "cli":
             from interfaces.cli import run_cli
 
+            _start_proactive_watchers(active_mode)
             run_cli(initial_command=cli_command or None)
         else:
             if args.webhook:
@@ -140,6 +193,7 @@ def main() -> int:
                 webhook_thread.start()
                 webhook_status = get_webhook_status()
                 logger.info("GitHub webhook listening on port %s", webhook_status["port"])
+            _start_proactive_watchers(active_mode)
             from interfaces.telegram_bot import run_polling
             run_polling()
     except KeyboardInterrupt:
