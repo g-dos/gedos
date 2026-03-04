@@ -48,6 +48,9 @@ PyGithub>=2.0.0
 # v0.9.8: Voice output
 gTTS>=2.5.0
 pydub>=0.25.1
+parsedatetime>=2.6
+pytz>=2024.1
+tzlocal>=4.3
 
 # Testing
 pytest>=8.0.0

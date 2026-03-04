@@ -1165,13 +1165,20 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     try:
-        from core.scheduler import parse_schedule_command, create_schedule, start_scheduler
+        from core.scheduler import (
+            create_schedule,
+            ensure_user_timezone,
+            format_schedule_description,
+            parse_schedule_command,
+            start_scheduler,
+        )
         
         # Ensure scheduler is running
         start_scheduler()
+        user_tz, tz_is_new = ensure_user_timezone(str(uid))
         
         # Parse the command
-        schedule_data = parse_schedule_command(update.message.text)
+        schedule_data = parse_schedule_command(update.message.text, user_tz=user_tz)
         if not schedule_data:
             await update.message.reply_text(t("schedule_invalid_format", lang))
             return
@@ -1184,15 +1191,16 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             task_description=schedule_data['task'],
             day_of_week=schedule_data.get('day_of_week'),
             schedule_date=schedule_data.get('schedule_date'),
+            schedule_times=schedule_data.get('times'),
+            interval_minutes=schedule_data.get('interval_minutes'),
+            timezone=user_tz,
         )
-        
-        if task.frequency == "once":
-            confirm_msg = t("scheduled_once", lang, time=task.schedule_time, task=task.task_description)
-        elif task.frequency == "daily":
-            confirm_msg = t("scheduled_daily", lang, time=task.schedule_time, task=task.task_description)
-        elif task.frequency == "weekly":
-            confirm_msg = t("scheduled_weekly", lang, day=task.day_of_week.title(), time=task.schedule_time, task=task.task_description)
-        
+
+        confirm_lines = []
+        if tz_is_new:
+            confirm_lines.append(f"Detected timezone: {user_tz}. Is this correct? [Y/n]")
+        confirm_lines.append(format_schedule_description(task, user_tz=user_tz))
+        confirm_msg = "\n\n".join(confirm_lines)
         confirm_msg += "\n\n" + t("schedule_id_line", lang, id=task.id)
         await update.message.reply_text(confirm_msg)
         
@@ -1218,8 +1226,9 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         import io
         from rich.console import Console
         from rich.table import Table
-        from core.scheduler import list_user_schedules
+        from core.scheduler import ensure_user_timezone, format_schedule_description, list_user_schedules
 
+        user_tz, _ = ensure_user_timezone(str(uid))
         schedules = list_user_schedules(str(uid))
 
         if not schedules:
@@ -1233,13 +1242,7 @@ async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         table.add_column(t("schedules_col_last_run", lang), style="dim", width=12)
 
         for task in schedules:
-            when = f"{task.schedule_time}"
-            if task.frequency == "daily":
-                when = t("schedule_when_daily", lang, time=task.schedule_time)
-            elif task.frequency == "weekly":
-                when = t("schedule_when_weekly", lang, day=task.day_of_week.title(), time=task.schedule_time)
-            elif task.frequency == "once":
-                when = t("schedule_when_once", lang, time=task.schedule_time)
+            when = format_schedule_description(task, user_tz=user_tz).split(": ", 1)[1].rsplit(" — ", 1)[0]
             last_run = task.last_run.strftime("%m/%d %H:%M") if task.last_run else "—"
             table.add_row(str(task.id), when, task.task_description[:35], last_run)
 

@@ -375,8 +375,10 @@ def _handle_schedule_command(text: str) -> str:
             task_description=schedule_data["task"],
             day_of_week=schedule_data.get("day_of_week"),
             schedule_date=schedule_data.get("schedule_date"),
+            schedule_times=schedule_data.get("times"),
+            interval_minutes=schedule_data.get("interval_minutes"),
         )
-        return f"Scheduled #{task.id}: {task.task_description}"
+        return f"Scheduled #{task.id}: {schedule_data.get('human_readable', task.task_description)}"
     if text == "/schedules":
         tasks = list_user_schedules(CLI_USER_ID)
         if not tasks:
