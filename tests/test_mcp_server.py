@@ -144,10 +144,12 @@ def test_ask_llm_tool_calls_llm_with_mock_response(monkeypatch):
 
 def test_get_task_history_tool_returns_list_from_memory(monkeypatch):
     server = _build_server(monkeypatch)
+    requested = {}
+
     monkeypatch.setattr(
         mcp_server,
         "get_recent_tasks",
-        lambda limit=10: [
+        lambda limit=10, user_id=None: requested.update({"limit": limit, "user_id": user_id}) or [
             SimpleNamespace(
                 status="completed",
                 description="Run tests",
@@ -165,5 +167,6 @@ def test_get_task_history_tool_returns_list_from_memory(monkeypatch):
 
     result = server.tools["get_task_history"]()
 
+    assert requested == {"limit": 10, "user_id": "mcp_client"}
     assert "- [completed] Run tests | agent=mcp-terminal | result=64 passed" in result
     assert "- [failed] Open missing app | agent=mcp-gui | result=App not found" in result

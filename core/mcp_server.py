@@ -53,6 +53,7 @@ def _record_task(description: str, success: bool, agent_used: str, result: str) 
             status="completed" if success else "failed",
             agent_used=agent_used,
             result=result[:1000],
+            user_id="mcp_client",
         )
     except Exception:
         logger.exception("Failed to record MCP task")
@@ -213,7 +214,7 @@ def create_mcp_server():
         description="Return recent Gedos task history from the shared memory database.",
     )
     def get_task_history() -> str:
-        tasks = get_recent_tasks(limit=10)
+        tasks = get_recent_tasks(limit=10, user_id="mcp_client")
         if not tasks:
             return "No task history available."
         lines = []
