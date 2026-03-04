@@ -5,12 +5,20 @@ Uses LLM to analyze tasks and create structured execution plans.
 
 import logging
 import json
+import re
 from typing import List, Dict, Any, Literal, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 AgentType = Literal["terminal", "gui", "web", "llm"]
+_INJECTION_PATTERNS = (
+    re.compile(r"ignore", re.IGNORECASE),
+    re.compile(r"system:", re.IGNORECASE),
+    re.compile(r"system prompt", re.IGNORECASE),
+    re.compile(r"developer mode", re.IGNORECASE),
+    re.compile(r"disable safety", re.IGNORECASE),
+)
 
 @dataclass
 class TaskStep:
@@ -66,9 +74,10 @@ def _is_multi_step_task(task: str) -> bool:
 
 def _create_planning_prompt(task: str) -> str:
     """Create LLM prompt for task planning."""
+    safe_task = _sanitize_task_for_llm(task)
     return f"""Break down this task into sequential steps for execution by different agents:
 
-Task: {task}
+USER TASK: {safe_task}
 
 Available agents:
 - terminal: Execute shell commands, run scripts, file operations
@@ -96,8 +105,23 @@ Important rules:
 - Prefer terminal commands over GUI when possible
 - For file operations, use shell commands
 - For app opening, use 'open -a AppName' format
+- Break this into safe, minimal steps
 
-Break down: {task}"""
+Break down this safe task request:
+USER TASK: {safe_task}
+
+Break this into safe, minimal steps."""
+
+
+def _sanitize_task_for_llm(task: str) -> str:
+    """Strip common prompt-injection phrases before sending task text to the LLM."""
+    sanitized = task
+    for pattern in _INJECTION_PATTERNS:
+        if pattern.search(sanitized):
+            logger.warning("Removed prompt-injection phrase from task: %s", pattern.pattern)
+            sanitized = pattern.sub("", sanitized)
+    sanitized = " ".join(sanitized.split())
+    return sanitized or "[redacted unsafe task]"
 
 
 def plan_task(task: str, language: Optional[str] = None) -> TaskPlan:
