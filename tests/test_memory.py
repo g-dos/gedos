@@ -2,7 +2,6 @@
 
 import pytest
 from core.memory import (
-    Base,
     Conversation,
     Task,
     Context,
@@ -24,7 +23,7 @@ from core.memory import (
 def db_session():
     """In-memory SQLite for each test."""
     engine = get_engine(":memory:")
-    Base.metadata.create_all(engine)
+    init_db(engine)
     from sqlalchemy.orm import sessionmaker
     session = sessionmaker(bind=engine, expire_on_commit=False)()
     yield session

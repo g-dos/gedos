@@ -4,6 +4,8 @@ Stores conversations, tasks, and context across sessions.
 """
 
 import logging
+import os
+import stat
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -38,6 +40,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending")  # pending, running, completed, failed
     agent_used: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # terminal, gui, web
@@ -94,6 +97,15 @@ class AllowedChat(Base):
 
 def get_engine(database_path: Optional[str] = None):
     """Create SQLite engine. Uses config if database_path is None."""
+    path = _resolve_database_path(database_path)
+    url = f"sqlite:///{path}"
+    engine = create_engine(url, echo=False)
+    _ensure_db_permissions(path)
+    return engine
+
+
+def _resolve_database_path(database_path: Optional[str] = None) -> Path:
+    """Resolve the configured SQLite path to an absolute path."""
     if database_path is None:
         try:
             from core.config import load_config
@@ -108,8 +120,31 @@ def get_engine(database_path: Optional[str] = None):
         root = Path(__file__).resolve().parent.parent
         path = root / path
     path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{path}"
-    return create_engine(url, echo=False)
+    return path
+
+
+def _engine_database_path(engine) -> Optional[Path]:
+    """Best-effort resolve the filesystem path from an SQLAlchemy engine."""
+    try:
+        database = engine.url.database
+    except Exception:
+        return None
+    if not database:
+        return None
+    return Path(database)
+
+
+def _ensure_db_permissions(path: Optional[Path]) -> None:
+    """Enforce 0600 on the SQLite database file when it exists."""
+    if path is None or not path.exists():
+        return
+    desired_mode = stat.S_IRUSR | stat.S_IWUSR
+    try:
+        current_mode = stat.S_IMODE(path.stat().st_mode)
+        if current_mode != desired_mode:
+            os.chmod(path, desired_mode)
+    except OSError:
+        logger.exception("Failed to enforce permissions on %s", path)
 
 
 def init_db(engine=None):
@@ -117,6 +152,7 @@ def init_db(engine=None):
     if engine is None:
         engine = get_engine()
     Base.metadata.create_all(engine)
+    _ensure_db_permissions(_engine_database_path(engine))
     # Migration: add schedule_date to scheduled_tasks if missing
     try:
         with engine.connect() as conn:
@@ -124,6 +160,19 @@ def init_db(engine=None):
             conn.commit()
     except Exception:
         pass  # Column may already exist
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN user_id VARCHAR(64)"))
+            conn.commit()
+    except Exception:
+        pass  # Column may already exist
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_user_id ON tasks (user_id)"))
+            conn.commit()
+    except Exception:
+        pass
+    _ensure_db_permissions(_engine_database_path(engine))
     logger.info("Memory DB initialized")
 
 
@@ -175,13 +224,20 @@ def get_recent_conversations(user_id: str, limit: int = 20, session: Optional[Se
 # --- Task CRUD ---
 
 
-def add_task(description: str, status: str = "pending", agent_used: Optional[str] = None, result: Optional[str] = None, session: Optional[Session] = None) -> Task:
+def add_task(
+    description: str,
+    status: str = "pending",
+    agent_used: Optional[str] = None,
+    result: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session: Optional[Session] = None,
+) -> Task:
     """Create a new task record."""
     own_session = session is None
     if own_session:
         session = get_session()
     try:
-        t = Task(description=description, status=status, agent_used=agent_used, result=result)
+        t = Task(description=description, status=status, agent_used=agent_used, result=result, user_id=str(user_id) if user_id is not None else None)
         session.add(t)
         session.commit()
         session.refresh(t)
@@ -214,13 +270,16 @@ def update_task(task_id: int, status: Optional[str] = None, agent_used: Optional
             session.close()
 
 
-def get_recent_tasks(limit: int = 20, session: Optional[Session] = None) -> list[Task]:
+def get_recent_tasks(limit: int = 20, user_id: Optional[str] = None, session: Optional[Session] = None) -> list[Task]:
     """Get recent tasks for history/memory view."""
     own_session = session is None
     if own_session:
         session = get_session()
     try:
-        return list(session.query(Task).order_by(Task.created_at.desc()).limit(limit).all())
+        query = session.query(Task)
+        if user_id is not None:
+            query = query.filter(Task.user_id == str(user_id))
+        return list(query.order_by(Task.created_at.desc()).limit(limit).all())
     finally:
         if own_session:
             session.close()
@@ -489,6 +548,28 @@ def prune_old_conversations(retention_days: int = 30, session: Optional[Session]
     try:
         cutoff = datetime.utcnow() - timedelta(days=retention_days)
         deleted = session.query(Conversation).filter(Conversation.timestamp < cutoff).delete()
+        session.commit()
+        return deleted
+    finally:
+        if own_session:
+            session.close()
+
+
+def delete_all_patterns(user_id: str, session: Optional[Session] = None) -> int:
+    """Delete all user-scoped learned data and return the number of deleted rows."""
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        user_key = str(user_id)
+        deleted = 0
+        deleted += session.query(Conversation).filter(Conversation.user_id == user_key).delete()
+        deleted += session.query(Task).filter(Task.user_id == user_key).delete()
+        for entry in session.query(Context).all():
+            data = entry.data or {}
+            if data.get("user_id") == user_key:
+                session.delete(entry)
+                deleted += 1
         session.commit()
         return deleted
     finally:

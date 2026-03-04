@@ -38,10 +38,12 @@ async def test_owner_is_set_on_first_start(monkeypatch):
     monkeypatch.setattr(telegram_bot, "get_owner", lambda: None)
     monkeypatch.setattr(telegram_bot, "set_owner", lambda chat_id: owner_calls.append(chat_id))
     monkeypatch.setattr(telegram_bot, "add_conversation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(telegram_bot, "_claim_pairing_code", lambda: "PAIR-1234")
+    monkeypatch.setattr(telegram_bot, "_invalidate_generated_pairing_code", lambda: None)
     monkeypatch.setattr(memory, "init_db", lambda: None)
     monkeypatch.setattr(memory, "get_recent_conversations", lambda *args, **kwargs: [])
 
-    update = _update(111, "/start")
+    update = _update(111, "/start PAIR-1234")
     await telegram_bot.cmd_start(update, None)
 
     assert owner_calls == ["111"]
@@ -70,3 +72,80 @@ def test_allowed_chat_ids_from_env_is_respected(monkeypatch):
     allowed = telegram_bot._authorized_chat_ids()
 
     assert allowed == {"111", "222", "333"}
+
+
+@pytest.mark.asyncio
+async def test_generated_pairing_code_required_when_env_missing(monkeypatch):
+    owner_calls = []
+    monkeypatch.setattr(telegram_bot, "memory_init_db", lambda: None)
+    monkeypatch.setattr(telegram_bot, "get_owner", lambda: None)
+    monkeypatch.setattr(telegram_bot, "set_owner", lambda chat_id: owner_calls.append(chat_id))
+    monkeypatch.setattr(telegram_bot.secrets, "token_hex", lambda _: "abcd1234")
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(telegram_bot, "_generated_pairing_code", None)
+
+    update = _update(111, "/start")
+    await telegram_bot.cmd_start(update, None)
+
+    assert owner_calls == []
+    update.message.reply_text.assert_called_once()
+    assert telegram_bot._generated_pairing_code == "ABCD-1234"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_flood_logs_once_per_minute(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(telegram_bot, "memory_init_db", lambda: None)
+    monkeypatch.setattr(telegram_bot, "get_owner", lambda: SimpleNamespace(chat_id="111"))
+    monkeypatch.setattr(telegram_bot, "list_allowed_chats", lambda: [])
+    monkeypatch.setattr(telegram_bot, "get_allowed_chat_ids", lambda: set())
+    monkeypatch.setattr(telegram_bot, "_unauthorized_chat_log_at", {})
+    monkeypatch.setattr(telegram_bot.logger, "warning", lambda *args, **kwargs: warnings.append((args, kwargs)))
+
+    first = _update(222, "/help")
+    second = _update(222, "/help")
+    await telegram_bot.cmd_help(first, None)
+    await telegram_bot.cmd_help(second, None)
+
+    assert first.message.reply_text.call_count == 0
+    assert second.message.reply_text.call_count == 0
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_history_is_scoped_to_chat_id(monkeypatch):
+    monkeypatch.setattr(telegram_bot, "memory_init_db", lambda: None)
+    monkeypatch.setattr(telegram_bot, "get_owner", lambda: SimpleNamespace(chat_id="111"))
+    monkeypatch.setattr(telegram_bot, "list_allowed_chats", lambda: [])
+    monkeypatch.setattr(telegram_bot, "get_allowed_chat_ids", lambda: set())
+
+    requested = {}
+
+    def _recent_tasks(*, limit, user_id):
+        requested["limit"] = limit
+        requested["user_id"] = user_id
+        return []
+
+    monkeypatch.setattr(telegram_bot, "get_recent_tasks", _recent_tasks)
+
+    update = _update(111, "/memory")
+    await telegram_bot.cmd_memory(update, None)
+
+    assert requested == {"limit": 10, "user_id": "111"}
+    update.message.reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_forget_all_clears_requesting_chat(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(telegram_bot, "memory_init_db", lambda: None)
+    monkeypatch.setattr(telegram_bot, "get_owner", lambda: SimpleNamespace(chat_id="111"))
+    monkeypatch.setattr(telegram_bot, "list_allowed_chats", lambda: [])
+    monkeypatch.setattr(telegram_bot, "get_allowed_chat_ids", lambda: set())
+    monkeypatch.setattr(telegram_bot, "delete_all_patterns", lambda user_id: cleared.append(user_id) or 1)
+
+    update = _update(111, "/forget all")
+    await telegram_bot.cmd_forget(update, None)
+
+    assert cleared == ["111"]
+    update.message.reply_text.assert_called_once()

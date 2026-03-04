@@ -5,6 +5,7 @@ Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 
 import asyncio
 import logging
+import secrets
 from typing import Optional
 from collections import defaultdict
 from time import time
@@ -25,6 +26,7 @@ from core.memory import (
     add_conversation,
     add_allowed_chat,
     add_task as memory_add_task,
+    delete_all_patterns,
     get_recent_tasks,
     get_owner,
     init_db as memory_init_db,
@@ -57,11 +59,14 @@ _copilot_sensitivity_per_user: dict[int, str] = {}
 _pending_step_decision: dict[int, dict] = {}  # {user_id: {step_info, callback}}
 _pending_plan_decision: dict[int, asyncio.Future] = {}
 _pending_destructive_decision: dict[int, asyncio.Future] = {}
+_unauthorized_chat_log_at: dict[str, float] = {}
+_generated_pairing_code: Optional[str] = None
 
 # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX = 10  # max commands per minute
 RATE_LIMIT_WINDOW = 60.0  # seconds
+UNAUTHORIZED_LOG_WINDOW = 60.0
 _COPILOT_SENSITIVITY_SECONDS = {
     "high": 30.0,
     "medium": 60.0,
@@ -182,6 +187,48 @@ def _is_authorized_chat(chat_id: Optional[int]) -> bool:
     return str(chat_id) in _authorized_chat_ids()
 
 
+def _generated_claim_code() -> str:
+    """Create and cache a one-time pairing code until the owner claims the bot."""
+    global _generated_pairing_code
+    if _generated_pairing_code is None:
+        raw = secrets.token_hex(4).upper()
+        _generated_pairing_code = f"{raw[:4]}-{raw[4:]}"
+        message = (
+            f"⚠️  No PAIRING_CODE set. Generated one-time code: {_generated_pairing_code}\n"
+            f"Send /start {_generated_pairing_code} in Telegram to claim ownership."
+        )
+        logger.warning(message)
+        print(message)
+    return _generated_pairing_code
+
+
+def _claim_pairing_code() -> Optional[str]:
+    """Return the active pairing code for a fresh bot owner claim."""
+    if get_owner() is not None:
+        return None
+    env_code = get_pairing_code()
+    if env_code:
+        return env_code
+    return _generated_claim_code()
+
+
+def _invalidate_generated_pairing_code() -> None:
+    """Discard the in-memory one-time pairing code after owner claim."""
+    global _generated_pairing_code
+    _generated_pairing_code = None
+
+
+def _should_log_unauthorized(chat_id: Optional[int]) -> bool:
+    """Log unauthorized access at most once per chat per window."""
+    key = str(chat_id) if chat_id is not None else "unknown"
+    now = time()
+    last_seen = _unauthorized_chat_log_at.get(key)
+    if last_seen is not None and (now - last_seen) < UNAUTHORIZED_LOG_WINDOW:
+        return False
+    _unauthorized_chat_log_at[key] = now
+    return True
+
+
 def _ignore_if_unauthorized(update: Update, allow_unpaired_start: bool = False) -> bool:
     memory_init_db()
     chat_id = _chat_id(update)
@@ -190,7 +237,8 @@ def _ignore_if_unauthorized(update: Update, allow_unpaired_start: bool = False) 
         return not allow_unpaired_start
     if _is_authorized_chat(chat_id):
         return False
-    logger.warning("Ignoring unauthorized chat_id=%s", chat_id)
+    if _should_log_unauthorized(chat_id):
+        logger.warning("Ignoring unauthorized chat_id=%s", chat_id)
     return True
 
 
@@ -351,11 +399,13 @@ async def _run_task_with_progress_updates(task: str, progress_msg, uid: Optional
             if uid is not None:
                 add_conversation(str(uid), task, summary[:500])
                 agents_summary = ", ".join(set(agents_used))
+                task_user_id = _chat_id(update)
                 memory_add_task(
                     description=task, 
                     status="completed" if overall_success else "failed", 
                     agent_used=f"multi-step ({agents_summary})", 
-                    result=summary[:1000]
+                    result=summary[:1000],
+                    user_id=str(task_user_id) if task_user_id is not None else None,
                 )
             
             return {
@@ -386,13 +436,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     owner = get_owner()
     if owner is None and chat_id is not None:
-        pairing_code = get_pairing_code()
+        pairing_code = _claim_pairing_code()
         parts = update.message.text.strip().split(maxsplit=1)
         provided_code = parts[1].strip() if len(parts) > 1 else ""
         if pairing_code and provided_code != pairing_code:
             await update.message.reply_text(t("pairing_required", lang))
             return
         set_owner(str(chat_id))
+        _invalidate_generated_pairing_code()
 
     if uid is not None:
         from core.memory import get_recent_conversations, init_db
@@ -433,6 +484,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     lang = _user_lang(update, text)
     uid = _user_id(update)
+    chat_id = _chat_id(update)
     if uid is not None and not _check_rate_limit(uid):
         await update.message.reply_text(t("rate_limit", lang))
         return
@@ -457,7 +509,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply)
-            memory_add_task(description=payload, status="completed", agent_used="gui", result=reply[:500])
+            memory_add_task(description=payload, status="completed", agent_used="gui", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
         return
 
     if "clicar" in low or "click" in low:
@@ -477,7 +529,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
-                memory_add_task(description=payload, status="completed", agent_used="gui", result=reply)
+                memory_add_task(description=payload, status="completed", agent_used="gui", result=reply, user_id=str(chat_id) if chat_id is not None else None)
             return
 
     if _looks_like_shell_command(payload):
@@ -501,7 +553,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
-            memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000])
+            memory_add_task(description=payload, status="completed" if result.success else "failed", agent_used="terminal", result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
         return
 
     # Check if this is a multi-step task for enhanced progress reporting
@@ -544,7 +596,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await progress_msg.edit_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
-                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
+                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
             return
     else:
         progress_msg = await update.message.reply_text(t("task_started", lang))
@@ -565,7 +617,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await progress_msg.edit_text(reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
-                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500])
+                memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
             return
         _task_status = "idle"
         reply = out.get("result") or t("no_result", lang)
@@ -574,7 +626,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await progress_msg.edit_text(reply)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
-            memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000])
+            memory_add_task(description=payload, status="completed" if out.get("success") else "failed", agent_used=out.get("agent_used"), result=reply[:1000], user_id=str(chat_id) if chat_id is not None else None)
     return
 
 
@@ -1020,7 +1072,11 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not update.message or _ignore_if_unauthorized(update):
         return
     lang = _user_lang(update)
-    tasks = get_recent_tasks(limit=10)
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+    tasks = get_recent_tasks(limit=10, user_id=str(chat_id))
     if not tasks:
         await update.message.reply_text(t("memory_empty", lang))
         return
@@ -1031,6 +1087,23 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else:
             lines.append(t("memory_item", lang, status=task.status, description=task.description))
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear all stored learned data for the requesting chat."""
+    if not update.message or not update.message.text or _ignore_if_unauthorized(update):
+        return
+    lang = _user_lang(update, update.message.text)
+    parts = update.message.text.strip().split(maxsplit=1)
+    if len(parts) < 2 or parts[1].strip().lower() != "all":
+        await update.message.reply_text(t("usage_forget", lang))
+        return
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        await update.message.reply_text(t("cannot_identify_user", lang))
+        return
+    delete_all_patterns(str(chat_id))
+    await update.message.reply_text(t("forget_cleared", lang))
 
 
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1230,6 +1303,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("copilot", cmd_copilot))
     app.add_handler(CommandHandler("memory", cmd_memory))
+    app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("ping", cmd_ping))
