@@ -29,7 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", "-V",
         action="version",
-        version=f"gedos {__version__}",
+        version=f"gedos v{__version__}",
     )
     parser.add_argument(
         "--mode", "-m",
