@@ -2,6 +2,24 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.9] — 2026-03
+
+### Added
+- **CLI Mode auto-detection**: Gedos now starts in CLI Mode automatically whenever no Telegram bot token is configured
+- **First-run onboarding**: new CLI onboarding walks through LLM setup, name, preferred form of address, permission level, optional Telegram activation, and optional `GEDOS.md` editing
+- **Personal config file**: Gedos now creates and reads `~/.gedos/GEDOS.md` as a persistent per-user configuration file
+
+### Enhanced
+- **ASCII startup banner**: every CLI and Telegram startup now prints the Gedos banner plus the active mode, LLM model, and version
+- **Redesigned CLI help**: `/help` in CLI Mode now shows the full command reference for tasks, web, LLM, schedules, memory, Copilot, GitHub, voice, system, MCP, and Pilot Mode
+- **Permission controls**: added `/permissions` in both CLI and Telegram to view and switch between Default and Full Access modes
+- **Profile access shortcut**: added `/config` so users can quickly open or locate `GEDOS.md`
+- **Demo-quality orchestration display**: multi-step planning now shows a cleaner dry-run plan and a step-by-step execution timeline with elapsed time
+
+### Validation
+- **CLI and onboarding coverage**: added mocked tests for startup mode detection, onboarding behavior, `GEDOS.md` generation, CLI help, permission handling, and onboarding persistence paths
+- **Test suite**: all tests pass after the CLI and onboarding expansion (`153 passed`)
+
 ## [0.9.8] — 2026-03
 
 ### Added
