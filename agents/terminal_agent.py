@@ -127,7 +127,7 @@ def run_shell(
     cfg = get_agent_config("terminal")
     t = timeout_seconds or cfg.get("timeout", DEFAULT_TIMEOUT)
     retries = max_retries if max_retries is not None else cfg.get("max_retries", 1)
-    is_safe, reason = sanitize_command(command)
+    is_safe, reason = sanitize_command(command, cwd=cwd)
     if not is_safe:
         raise SecurityError(reason)
 
