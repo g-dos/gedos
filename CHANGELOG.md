@@ -2,6 +2,23 @@
 
 All notable changes to GEDOS are documented here. Versioning follows [Semver](https://semver.org/).
 
+## [0.9.8] — 2026-03
+
+### Added
+- **Voice output via gTTS**: Gedos can now synthesize spoken responses for Telegram delivery using Google Text-to-Speech with no API key
+- **OGG voice packaging**: generated speech is converted into Telegram-friendly OGG voice audio using `pydub`, with FFmpeg documented as the required system dependency
+- **Voice command controls**: added `/voice on|off|status` so each chat can enable or disable spoken responses
+
+### Enhanced
+- **Task and `/ask` voice replies**: Gedos now speaks after task completion and after `/ask` responses when voice mode is enabled
+- **Speech-safe formatting**: `text_to_speech_safe()` strips markdown, code fences, links, bullet formatting, and emoji before speech output
+- **CLI voice playback**: the CLI path now supports `/voice` commands and uses macOS `afplay` for local playback
+- **Graceful fallback**: when synthesis or voice delivery fails, Gedos automatically falls back to text responses
+
+### Validation
+- **Voice regression coverage**: added mocked coverage for synthesis success/failure, Telegram delivery, `/voice` toggles, task-completion voice behavior, and TTS-safe truncation
+- **Test suite**: all tests pass after voice-output integration (`134 passed`)
+
 ## [0.9.7] — 2026-03
 
 ### Added
