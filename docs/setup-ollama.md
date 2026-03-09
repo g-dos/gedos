@@ -62,6 +62,12 @@ Verify models are installed:
 ollama list
 ```
 
+## Optional: Semantic Memory
+
+```bash
+ollama pull nomic-embed-text
+```
+
 ---
 
 ## Configuring Gedos for Ollama
