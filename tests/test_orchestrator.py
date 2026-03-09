@@ -38,7 +38,10 @@ def test_run_task_terminal():
 def test_run_task_observes_successful_task(monkeypatch):
     calls = []
     monkeypatch.setattr("core.task_planner._is_multi_step_task", lambda task: False)
-    monkeypatch.setattr("core.orchestrator.run_single_step_task", lambda task, language=None: {"success": True, "result": "ok", "agent_used": "terminal"})
+    monkeypatch.setattr(
+        "core.orchestrator.run_single_step_task",
+        lambda task, language=None, **kwargs: {"success": True, "result": "ok", "agent_used": "terminal"},
+    )
     monkeypatch.setattr(behavior_tracker, "start_background_tracker", lambda: None)
     monkeypatch.setattr(behavior_tracker, "observe", lambda task, user_id, context: calls.append((task, user_id, context)))
 
