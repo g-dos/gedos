@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "gedos"
-version = "0.9.15"
+version = "0.9.16"
 description = "Autonomous AI agent for macOS. Your Mac, working while you're not."
 readme = "README.md"
 license = {text = "Apache-2.0"}
