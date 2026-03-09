@@ -9,6 +9,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [0.9.16] — 2026-03-09
+### Added
+- CI matrix for Python 3.12 and 3.13
+- Smoke E2E test suite (tests/e2e/)
+- Optional dependency groups in pyproject.toml (semantic, web, voice, dev, all)
+### Fixed
+- datetime.utcnow() deprecation warnings across all modules
+### Improved
+- Coverage enforcement configured globally
+- pip cache added to CI for faster runs
+
+---
+
 ## [0.9.15] — 2026-03-09
 ### Added
 - Semantic memory layer (ChromaDB + Ollama embeddings) — episodic, session, and pattern memory

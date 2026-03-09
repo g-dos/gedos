@@ -12,6 +12,7 @@
 ```
 
 [![CI](https://github.com/g-dos/gedos/actions/workflows/test.yml/badge.svg)](https://github.com/g-dos/gedos/actions/workflows/test.yml)
+[![Version](https://img.shields.io/badge/version-v0.9.16-blue.svg)](https://github.com/g-dos/gedos/releases)
 [![Coverage](https://codecov.io/gh/g-dos/gedos/branch/main/graph/badge.svg)](https://codecov.io/gh/g-dos/gedos)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
@@ -33,7 +34,7 @@ gedos
 > what's the weather in São Paulo today?
 ```
 
-→ [Watch the demo](#) · [Full setup guide](docs/setup.md)
+Demo GIF coming with v1.0.0 launch · [Full setup guide](docs/setup.md)
 
 **Your Mac. Working while you're not.**
 
@@ -67,6 +68,12 @@ python gedos.py
 ---
 
 ## What Gedos can do
+
+### v0.9.16 highlights
+- Semantic Memory (ChromaDB + Ollama embeddings)
+- Continuous Perception (AXObserver, event-driven)
+- Kokoro TTS (local/offline) with gTTS fallback
+- Web Tool via Scrapling (optional dependency)
 
 ## Real-world examples
 
@@ -157,6 +164,18 @@ After git commit -> you usually push.
 Want me to automate this?
 ```
 
+### 🧠 Semantic Memory
+Adds retrieval-aware context from previous conversations and task outcomes.
+
+```text
+Relevant context:
+- Previous task failed on scheduler parsing
+- You usually run tests after editing scheduler.py
+```
+
+### 👁️ Continuous Perception
+Uses AXObserver events for near-instant Copilot reactions instead of fixed 10s polling.
+
 ### 🎙️ Voice
 Send a voice message. Gedos transcribes, executes, responds by voice.
 
@@ -164,6 +183,13 @@ Send a voice message. Gedos transcribes, executes, responds by voice.
 You: [voice] "run tests and tell me if they passed"
 Gedos: 🎙️ Heard: run tests and tell me if they passed. Executing...
 [returns spoken summary]
+```
+
+### 🌐 Web Tool (Scrapling)
+Uses lightweight scraping for static pages and keeps Playwright for dynamic/interactive flows.
+
+```text
+/task scrape https://example.com and get all h1 titles
 ```
 
 ### 🔌 MCP Server
@@ -220,6 +246,8 @@ Natural language scheduling.
 | `/task <description>` | Run any task through the orchestrator |
 | `/status` | Show the current task status |
 | `/stop` | Cancel the current task |
+| `/checklist` | Validate local setup and missing requirements |
+| `/auditlog` | Show the latest audit log entries |
 | `/web <url>` | Browse and summarize a URL |
 | `/ask <question>` | Ask the configured LLM directly |
 | `/memory` | Show recent task history |
@@ -258,30 +286,30 @@ Natural language scheduling.
 ```text
            User (CLI / Telegram / MCP / Webhook)
                          |
-      +------------------+------------------+
-      |                  |                  |
-   CLI Mode         Telegram Bot        MCP Server
-      |                  |                  |
-      +------------------+------------------+
+      +------------------+------------------+-------------------+
+      |                  |                  |                   |
+   CLI Mode         Telegram Bot        MCP Server         Webhook Server
+      |                  |                  |                   |
+      +------------------+------------------+-------------------+
                          |
                  Orchestrator (LangGraph)
                          |
-     +-----------+-------+--------+------------+
-     |           |                |            |
- Terminal     GUI Agent        Web Agent      LLM
-  Agent       (AX Tree)       (Playwright)   Layer
-     |                                         |
-     +-------------------+---------------------+
+     +-----------+----------+-----------+---------------+
+     |           |          |           |               |
+ Terminal     GUI Agent   Web Agent    LLM         CI Healer
+  Agent      (AX/events)  (Playwright + Scrapling) Layer
+     |           |          |           |               |
+     +-----------+----------+-----------+---------------+
                          |
-                 Memory Layer (SQLite)
+           Memory Layer (SQLite + Semantic Vectors)
                          |
-      +-------------+----+-----+---------------+
-      |             |          |               |
- Behavior Tracker  Scheduler  CI Healer   Security Layer
-      |             |          |               |
-      +-------------+----------+---------------+
+      +-------------+----+------+------------------------+
+      |             |           |                        |
+ Behavior Tracker  Scheduler  AXObserver       Security Layer
+      |             |           |                        |
+      +-------------+-----------+------------------------+
                          |
-                Proactive Suggestions / History
+                Proactive Engine / Suggestions / History
 ```
 
 ---
@@ -349,12 +377,12 @@ macOS 12.0+, Python 3.12+, Ollama or API key, ffmpeg (for voice)
 | Local LLM | Ollama |
 | Cloud LLMs | Claude API, OpenAI API |
 | Voice input | Whisper |
-| Voice output | gTTS + pydub + ffmpeg |
+| Voice output | Kokoro + gTTS fallback + pydub + ffmpeg |
 | Natural language scheduling | parsedatetime + pytz + tzlocal |
 | MCP | `mcp` Python SDK |
 | GitHub automation | Flask + PyGithub |
 | Language detection | langdetect |
-| Screen understanding | macOS Accessibility Tree (AX) |
+| Screen understanding | macOS Accessibility Tree (AX) + AXObserver |
 
 ---
 
