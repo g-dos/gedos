@@ -12,6 +12,13 @@ logger = logging.getLogger(__name__)
 AgentKind = Literal["terminal", "gui", "web", "llm"]
 _STOP_EVENT: Optional[asyncio.Event] = None
 
+try:
+    from tools.web_scraper import SCRAPLING_AVAILABLE, fetch_raw, scrape
+except Exception:
+    SCRAPLING_AVAILABLE = False
+    fetch_raw = None  # type: ignore[assignment]
+    scrape = None  # type: ignore[assignment]
+
 
 def _get_stop_event() -> asyncio.Event:
     """Return the shared stop event."""
@@ -54,6 +61,16 @@ def _route_task(task: str) -> AgentKind:
     if any(k in low for k in ("perguntar", "ask", "o que é", "o que e", "what is", "explique", "explain", "resuma", "summarize")) or low.startswith("/ask"):
         return "llm"
     return "terminal"
+
+
+def _should_use_scrapling(task: str) -> bool:
+    """Return whether a task is a simple scrape/extract request."""
+    low = (task or "").lower()
+    scrape_keywords = ("scrape", "extract", "get text", "fetch content")
+    interactive_keywords = ("click", "fill", "interact", "login")
+    wants_scrape = any(keyword in low for keyword in scrape_keywords)
+    wants_interaction = any(keyword in low for keyword in interactive_keywords)
+    return wants_scrape and not wants_interaction
 
 
 def _run_terminal(task: str) -> dict[str, Any]:
@@ -216,6 +233,14 @@ def _run_web(task: str) -> dict[str, Any]:
     
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
+    if _should_use_scrapling(task) and SCRAPLING_AVAILABLE and scrape is not None:
+        if any(keyword in low for keyword in ("raw html", "source html", "html source")) and fetch_raw is not None:
+            scraped = fetch_raw(url)
+        else:
+            scraped = scrape(url)
+        return {"success": not scraped.lower().startswith(("web scrape failed:", "raw fetch failed:")), "result": scraped, "agent_used": "web"}
+
     r = navigate(url)
     return _web_result_to_dict(r)
 
