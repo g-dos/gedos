@@ -38,8 +38,16 @@ dependencies = [
     "tzlocal>=4.3",
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
     "pytest-timeout",
 ]
+
+[project.optional-dependencies]
+semantic = ["chromadb", "ollama"]
+web = ["scrapling"]
+voice = ["kokoro>=0.7.0", "soundfile>=0.12.1", "numpy>=1.26.0"]
+dev = ["pytest", "pytest-cov", "pytest-timeout"]
+all = ["chromadb", "ollama", "scrapling", "kokoro>=0.7.0", "soundfile>=0.12.1", "numpy>=1.26.0"]
 
 [project.scripts]
 gedos = "gedos:main"
