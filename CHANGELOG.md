@@ -9,6 +9,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [0.9.15] — 2026-03-09
+### Added
+- Semantic memory layer (ChromaDB + Ollama embeddings) — episodic, session, and pattern memory
+- Event-driven screen perception via AXObserver (replaces 10s polling in Copilot Mode)
+- Kokoro TTS local synthesis (replaces gTTS as primary, gTTS remains fallback)
+- Web scraping tool via Scrapling (optional dependency, `pip install scrapling`)
+
+---
+
 ## [0.9.13] — 2026-03-04
 ### Added
 - GitHub Actions CI workflow with coverage reporting
