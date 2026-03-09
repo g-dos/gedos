@@ -57,3 +57,8 @@ pytest>=8.0.0
 pytest-asyncio>=1.0.0
 pytest-timeout>=2.3.1
 pytest-cov>=5.0.0
+
+# Optional: semantic memory (ChromaDB + Ollama embeddings)
+# Install only if you want semantic retrieval memory support.
+chromadb>=0.5.0
+ollama>=0.3.0
