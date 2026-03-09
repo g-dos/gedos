@@ -6,7 +6,17 @@ Full Copilot Mode: detect opportunities and risks.
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+import time
 from typing import Optional
+
+try:
+    from core.ax_observer import AXObserver, AX_OBSERVER_AVAILABLE, get_frontmost_app_name
+except Exception:
+    AXObserver = None  # type: ignore[assignment]
+    AX_OBSERVER_AVAILABLE = False
+
+    def get_frontmost_app_name() -> str:
+        return ""
 
 from core.behavior_tracker import get_active_patterns
 from core.config import load_config
@@ -26,6 +36,9 @@ ERROR_RISK_KEYWORDS = (
     "error", "exception", "failed", "failure", "erro", "falha",
     "warning", "aviso", "traceback", "crash", "timeout",
 )
+
+_ax_observer: AXObserver | None = None
+_last_event_time: float = 0.0
 
 @dataclass
 class CopilotHint:
@@ -61,6 +74,59 @@ def publish_hints(user_id: str, hints: list[CopilotHint]) -> int:
         if proactive_notify(str(user_id), hint.message, "screen", priority):
             delivered += 1
     return delivered
+
+
+def start_event_driven(user_id: str, send_fn: callable) -> None:
+    """Start AXObserver-driven Copilot analysis for a user."""
+    del send_fn  # Event delivery remains routed via publish_hints/proactive engine.
+    global _ax_observer
+    global _last_event_time
+
+    if not AX_OBSERVER_AVAILABLE:
+        logger.warning("AXObserver unavailable; Copilot remains on polling fallback")
+        return
+
+    if _ax_observer is not None:
+        return
+
+    _last_event_time = 0.0
+
+    def _on_ax_event(event_name: str, pid: int | None) -> None:
+        del pid
+        global _last_event_time
+        now_ts = time.time()
+        if now_ts - _last_event_time < 1.0:
+            return
+        _last_event_time = now_ts
+
+        try:
+            app_name = get_frontmost_app_name()
+            hints = analyze_context(user_id=str(user_id), current_time=datetime.utcnow())
+            if hints:
+                publish_hints(str(user_id), hints)
+            logger.debug("AX event processed: %s app=%s hints=%s", event_name, app_name, len(hints))
+        except Exception:
+            logger.exception("Failed processing AX event=%s for user=%s", event_name, user_id)
+
+    try:
+        _ax_observer = AXObserver(_on_ax_event)
+        _ax_observer.start()
+    except Exception:
+        logger.exception("Failed to start AXObserver event-driven Copilot")
+        _ax_observer = None
+
+
+def stop_event_driven() -> None:
+    """Stop AXObserver-driven Copilot analysis."""
+    global _ax_observer
+    if _ax_observer is None:
+        return
+    try:
+        _ax_observer.stop()
+    except Exception:
+        logger.exception("Failed to stop AXObserver event-driven Copilot")
+    finally:
+        _ax_observer = None
 
 
 def _minutes_from_trigger(trigger: str, now: datetime) -> Optional[float]:
