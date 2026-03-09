@@ -7,6 +7,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional, Union
 
+try:
+    from tools.voice_kokoro import synthesize_kokoro, kokoro_available
+
+    _KOKORO_IMPORTED = True
+except ImportError:
+    _KOKORO_IMPORTED = False
+
+    def kokoro_available() -> bool:
+        return False
+
 logger = logging.getLogger(__name__)
 
 _WHISPER_NOT_INSTALLED_MSG = (
@@ -69,6 +79,11 @@ def synthesize_speech(text: str, language: str) -> Optional[bytes]:
     """
     if not text or not text.strip():
         return None
+
+    if _KOKORO_IMPORTED and kokoro_available():
+        result = synthesize_kokoro(text, language)
+        if result is not None:
+            return result
 
     try:
         from gtts import gTTS
