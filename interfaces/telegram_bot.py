@@ -28,7 +28,14 @@ from telegram.ext import (
 from core.config import get_gedos_md_path, get_telegram_token, pilot_enabled, load_config, update_config
 from core.audit_log import read_recent_actions
 from core.audit_log import log_action
-from core.copilot_context import analyze_context, get_copilot_sensitivity_seconds, publish_hints
+from core.ax_observer import AX_OBSERVER_AVAILABLE
+from core.copilot_context import (
+    analyze_context,
+    get_copilot_sensitivity_seconds,
+    publish_hints,
+    start_event_driven,
+    stop_event_driven,
+)
 from core.behavior_tracker import observe, start_background_tracker
 from core.memory import (
     add_conversation,
@@ -1658,6 +1665,7 @@ async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     uid = _user_id(update)
     if uid is None:
         return
+    chat_id = _chat_id(update)
     lang = _user_lang(update)
     text = update.message.text.strip().lower()
     if " status" in text or text.endswith("status"):
@@ -1685,9 +1693,21 @@ async def cmd_copilot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if " off" in text or text.endswith("off"):
         _copilot_active[uid] = False
+        try:
+            stop_event_driven()
+        except Exception:
+            logger.exception("Failed to stop event-driven Copilot for user_id=%s", uid)
         await update.message.reply_text(t("copilot_off", lang))
     else:
         _copilot_active[uid] = True
+        if AX_OBSERVER_AVAILABLE and chat_id is not None:
+            try:
+                start_event_driven(
+                    user_id=str(chat_id),
+                    send_fn=lambda msg: context.bot.send_message(chat_id, msg),
+                )
+            except Exception:
+                logger.exception("Failed to start event-driven Copilot for chat_id=%s", chat_id)
         await update.message.reply_text(t("copilot_on", lang))
 
 
