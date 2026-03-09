@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import core.behavior_tracker as behavior_tracker
@@ -77,7 +77,7 @@ def test_pattern_decays_after_thirty_days_inactivity():
     pattern = SimpleNamespace(
         user_id="user1",
         confidence=0.6,
-        last_seen=datetime.utcnow() - timedelta(days=31),
+        last_seen=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=31),
         occurrences=5,
         active=True,
     )
@@ -95,7 +95,7 @@ def test_pattern_removed_when_confidence_drops_below_zero_point_one():
     pattern = SimpleNamespace(
         user_id="user1",
         confidence=0.05,
-        last_seen=datetime.utcnow() - timedelta(days=31),
+        last_seen=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=31),
         occurrences=3,
         active=True,
     )
@@ -110,7 +110,12 @@ def test_pattern_removed_when_confidence_drops_below_zero_point_one():
 
 def test_max_fifty_patterns_per_user_enforced():
     patterns = [
-        SimpleNamespace(user_id="user1", confidence=1.0 - (idx * 0.01), last_seen=datetime.utcnow(), active=True)
+        SimpleNamespace(
+            user_id="user1",
+            confidence=1.0 - (idx * 0.01),
+            last_seen=datetime.now(UTC).replace(tzinfo=None),
+            active=True,
+        )
         for idx in range(51)
     ]
     session = _FakeSession(patterns)

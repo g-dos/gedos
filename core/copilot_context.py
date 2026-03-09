@@ -5,7 +5,7 @@ Full Copilot Mode: detect opportunities and risks.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 import time
 from typing import Optional
 
@@ -101,7 +101,7 @@ def start_event_driven(user_id: str, send_fn: callable) -> None:
 
         try:
             app_name = get_frontmost_app_name()
-            hints = analyze_context(user_id=str(user_id), current_time=datetime.utcnow())
+            hints = analyze_context(user_id=str(user_id), current_time=datetime.now(UTC))
             if hints:
                 publish_hints(str(user_id), hints)
             logger.debug("AX event processed: %s app=%s hints=%s", event_name, app_name, len(hints))
@@ -184,7 +184,7 @@ def analyze_context(
         return hints
 
     app_name = (tree.get("app") or "").strip()
-    now = current_time or datetime.utcnow()
+    now = current_time or datetime.now(UTC)
     normalized_last_task = " ".join((last_task or "").strip().lower().split())
     all_text: list[str] = []
     all_window_titles: list[str] = []

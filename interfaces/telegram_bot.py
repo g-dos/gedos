@@ -4,7 +4,7 @@ Handles /task, /status, /stop, /copilot, /memory, /web, /ask.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 import json
 import logging
@@ -367,7 +367,7 @@ def _export_dir() -> Path:
 def _write_export_file(user_id: str) -> Path:
     """Write a JSON export for one user and return the file path."""
     payload = export_user_data(str(user_id))
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target = _export_dir() / f"gedos-export-{user_id}-{stamp}.json"
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return target
@@ -587,7 +587,7 @@ def _learn_patterns_for_task(task: str, chat_id: Optional[int], context: Optiona
     if chat_id is None:
         return []
     try:
-        return observe(task, str(chat_id), context or {"time": datetime.utcnow()})
+        return observe(task, str(chat_id), context or {"time": datetime.now(UTC).replace(tzinfo=None)})
     except Exception:
         logger.exception("Behavior tracker observe failed in Telegram task flow")
         return []
@@ -1100,7 +1100,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 payload,
                 language=lang,
                 user_id=str(chat_id) if chat_id is not None else None,
-                context={"time": datetime.utcnow()},
+                context={"time": datetime.now(UTC).replace(tzinfo=None)},
             )
             if _task_cancelled or is_stop_requested():
                 _task_status = "idle"
@@ -1889,7 +1889,7 @@ async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 tree=tree,
                 user_id=str(uid),
                 last_task=last_task,
-                current_time=datetime.utcnow(),
+                current_time=datetime.now(UTC),
             )
             if not hints:
                 continue

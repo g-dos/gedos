@@ -6,7 +6,7 @@ Stores conversations, tasks, and context across sessions.
 import logging
 import os
 import stat
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,6 +14,11 @@ from sqlalchemy import JSON, Boolean, DateTime, String, Text, create_engine, tex
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_naive() -> datetime:
+    """Return UTC now as naive datetime for SQLite DateTime compatibility."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -31,7 +36,7 @@ class Conversation(Base):
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
 class Task(Base):
@@ -45,7 +50,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending")  # pending, running, completed, failed
     agent_used: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # terminal, gui, web
     result: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
 class Context(Base):
@@ -58,7 +63,7 @@ class Context(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)  # app_state, screen_content, learning
     voice_output_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
 class ScheduledTask(Base):
@@ -75,7 +80,7 @@ class ScheduledTask(Base):
     day_of_week: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # monday, tuesday, etc (for weekly)
     is_active: Mapped[bool] = mapped_column(default=True)
     job_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # APScheduler job ID
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
     last_run: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
@@ -85,7 +90,7 @@ class Owner(Base):
     __tablename__ = "owners"
 
     chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
 class AllowedChat(Base):
@@ -94,7 +99,7 @@ class AllowedChat(Base):
     __tablename__ = "allowed_chats"
 
     chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
 
 
 class Pattern(Base):
@@ -108,7 +113,7 @@ class Pattern(Base):
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     occurrences: Mapped[int] = mapped_column(default=1)
-    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
     confidence: Mapped[float] = mapped_column(default=0.1)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -754,7 +759,7 @@ def prune_old_conversations(retention_days: int = 30, session: Optional[Session]
     if own_session:
         session = get_session()
     try:
-        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        cutoff = _utc_now_naive() - timedelta(days=retention_days)
         deleted = session.query(Conversation).filter(Conversation.timestamp < cutoff).delete()
         session.commit()
         return deleted
@@ -829,7 +834,7 @@ def cleanup_old_data(
             except Exception:
                 retention_days = 90
         retention_days = max(int(retention_days), 1)
-        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        cutoff = _utc_now_naive() - timedelta(days=retention_days)
         user_key = str(user_id)
         deleted = 0
         deleted += session.query(Task).filter(Task.user_id == user_key, Task.created_at < cutoff).delete()
@@ -922,7 +927,7 @@ def export_user_data(user_id: str, session: Optional[Session] = None) -> dict[st
                 pass
 
         return {
-            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "exported_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "user": {
                 "user_id": user_key,
                 "name": profile_name,
@@ -1038,7 +1043,7 @@ def add_or_update_pattern(pattern_data: dict[str, Any], session: Optional[Sessio
                 trigger=trigger,
                 action=action,
                 occurrences=int(pattern_data.get("occurrences", 1)),
-                last_seen=pattern_data.get("last_seen") or datetime.utcnow(),
+                last_seen=pattern_data.get("last_seen") or _utc_now_naive(),
                 confidence=float(pattern_data.get("confidence", _pattern_confidence(int(pattern_data.get("occurrences", 1))))),
                 active=bool(pattern_data.get("active", int(pattern_data.get("occurrences", 1)) >= 3)),
                 suppressed=bool(pattern_data.get("suppressed", False)),
@@ -1079,7 +1084,7 @@ def increment_pattern(pattern_id: str, session: Optional[Session] = None) -> Opt
         if not pattern:
             return None
         pattern.occurrences += 1
-        pattern.last_seen = datetime.utcnow()
+        pattern.last_seen = _utc_now_naive()
         pattern.confidence = _pattern_confidence(pattern.occurrences)
         pattern.active = pattern.occurrences >= 3
         _trim_active_patterns(pattern.user_id, session)
@@ -1097,7 +1102,7 @@ def decay_patterns(user_id: str, session: Optional[Session] = None) -> int:
     if own_session:
         session = get_session()
     try:
-        threshold = datetime.utcnow() - timedelta(days=30)
+        threshold = _utc_now_naive() - timedelta(days=30)
         changed = 0
         patterns = list(session.query(Pattern).filter(Pattern.user_id == str(user_id)).all())
         for pattern in patterns:

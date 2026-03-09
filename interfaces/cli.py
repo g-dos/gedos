@@ -4,7 +4,7 @@ GEDOS CLI Mode — local interactive shell when Telegram is not configured.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -335,7 +335,7 @@ def _export_dir() -> Path:
 def _write_export_file() -> Path:
     """Write a user-data export file and return its path."""
     payload = export_user_data(CLI_USER_ID)
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target = _export_dir() / f"gedos-export-{stamp}.json"
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return target
@@ -742,7 +742,7 @@ def _run_command(command: str, voice_enabled: bool) -> tuple[str, bool]:
         task,
         language="en",
         user_id=CLI_USER_ID,
-        context={"time": datetime.utcnow()},
+        context={"time": datetime.now(UTC).replace(tzinfo=None)},
     )
     _CLI_TASK_STATUS = "idle"
     return (result.get("result") or "No result.", voice_enabled)

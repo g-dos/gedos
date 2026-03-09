@@ -4,7 +4,7 @@ GEDOS morning briefing watcher — sends a daily kickoff summary.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 import os
 import threading
@@ -65,7 +65,7 @@ def _github_summary() -> tuple[int, int, str]:
 def _build_briefing(user_id: str) -> str:
     """Build the morning summary text."""
     tasks = get_recent_tasks(limit=50, user_id=str(user_id))
-    since = datetime.utcnow() - timedelta(days=1)
+    since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
     completed = sum(1 for task in tasks if task.status == "completed" and task.created_at >= since)
     scheduled = sum(1 for task in tasks if task.agent_used == "scheduler" and task.created_at >= since)
     open_prs, open_issues, ci_status = _github_summary()

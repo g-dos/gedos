@@ -211,10 +211,6 @@ def test_morning_briefing_sends_at_correct_time():
         def now(cls):
             return datetime(2026, 3, 4, 9, 5, 0)
 
-        @classmethod
-        def utcnow(cls):
-            return datetime(2026, 3, 4, 9, 5, 0)
-
     with patch("core.watchers.morning_briefing.datetime", FakeDateTime):
         with patch("core.watchers.morning_briefing.known_user_ids", return_value=["123"]):
             with patch("core.watchers.morning_briefing._start_hour_for_user", return_value=9):

@@ -237,7 +237,7 @@ async def _execute_scheduled_task(task_id: int) -> None:
         from interfaces.telegram_bot import _execute_task_autonomously
 
         result = await _execute_task_autonomously(task=task.task_description, user_id=int(task.user_id))
-        update_scheduled_task(task_id, last_run=datetime.utcnow())
+        update_scheduled_task(task_id, last_run=datetime.now(UTC).replace(tzinfo=None))
 
         if task.frequency == "once":
             update_scheduled_task(task_id, is_active=False)

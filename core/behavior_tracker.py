@@ -5,7 +5,7 @@ GEDOS behavior tracker — learns repeated task patterns from task history.
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 import threading
 from typing import Optional
@@ -117,7 +117,7 @@ def observe(task: str, user_id: Optional[str], context: Optional[dict] = None) -
 
     seen_at = context.get("time")
     if not isinstance(seen_at, datetime):
-        seen_at = datetime.utcnow()
+        seen_at = datetime.now(UTC).replace(tzinfo=None)
 
     decay_patterns(str(user_id))
     newly_confirmed = []
