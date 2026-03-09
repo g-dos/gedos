@@ -62,3 +62,9 @@ pytest-cov>=5.0.0
 # Install only if you want semantic retrieval memory support.
 chromadb>=0.5.0
 ollama>=0.3.0
+
+# Optional: multimodal local TTS with Kokoro
+# Install only if you want offline high-quality speech synthesis.
+kokoro>=0.7.0
+soundfile>=0.12.1
+numpy>=1.26.0
