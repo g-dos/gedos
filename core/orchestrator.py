@@ -7,6 +7,8 @@ import asyncio
 import logging
 from typing import Any, Literal, Optional
 
+from core.memory_semantic import SEMANTIC_MEMORY_AVAILABLE, SemanticMemory
+
 logger = logging.getLogger(__name__)
 
 AgentKind = Literal["terminal", "gui", "web", "llm"]
@@ -259,17 +261,32 @@ def _web_result_to_dict(r) -> dict[str, Any]:
     return {"success": True, "result": "\n".join(parts), "agent_used": "web"}
 
 
-def _run_llm(task: str, language: Optional[str] = None) -> dict[str, Any]:
+def _run_llm(
+    task: str,
+    language: Optional[str] = None,
+    semantic_memory: Optional[SemanticMemory] = None,
+) -> dict[str, Any]:
     """Execute task via LLM (lazy import)."""
     if is_stop_requested():
         return {"success": False, "result": "Stopped.", "agent_used": "llm"}
     from core.llm import complete as llm_complete
 
-    reply = llm_complete(task, max_tokens=1024, language=language)
+    prompt = task
+    if semantic_memory is not None:
+        relevant_context = semantic_memory.get_relevant_context(task)
+        if relevant_context:
+            prompt = f"Relevant context:\n{relevant_context}\n\nUser task:\n{task}"
+    reply = llm_complete(prompt, max_tokens=1024, language=language)
     return {"success": True, "result": reply, "agent_used": "llm"}
 
 
-def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language: Optional[str] = None) -> dict[str, Any]:
+def _execute_single_step(
+    agent: AgentKind,
+    action: str,
+    step_obj=None,
+    language: Optional[str] = None,
+    semantic_memory: Optional[SemanticMemory] = None,
+) -> dict[str, Any]:
     """Execute a single step with the specified agent."""
     if is_stop_requested():
         return {"success": False, "result": "Stopped.", "agent_used": agent}
@@ -288,7 +305,7 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language:
                 from agents.web_agent import execute_step
                 return execute_step(step_obj)
             elif agent == "llm":
-                return _run_llm(action, language=language)
+                return _run_llm(action, language=language, semantic_memory=semantic_memory)
         except Exception as e:
             logger.warning("Step-specific execution failed, falling back to legacy: %s", e)
 
@@ -302,7 +319,7 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language:
             if agent == "web":
                 return _run_web(action)
             if agent == "llm":
-                return _run_llm(action, language=language)
+                return _run_llm(action, language=language, semantic_memory=semantic_memory)
         except Exception as e:
             logger.warning("Step execution attempt %s failed: %s", attempt + 1, e)
             if attempt == 1:
@@ -311,7 +328,11 @@ def _execute_single_step(agent: AgentKind, action: str, step_obj=None, language:
     return {"success": False, "result": "Unknown agent.", "agent_used": "none"}
 
 
-def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
+def _run_multi_step_task(
+    task: str,
+    language: Optional[str] = None,
+    semantic_memory: Optional[SemanticMemory] = None,
+) -> dict[str, Any]:
     """
     Execute a multi-step task using the task planner.
     """
@@ -335,7 +356,13 @@ def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str,
             step_num = i + 1
             logger.info(f"Step {step_num}/{len(plan.steps)}: {step.agent} - {step.action[:80]}")
 
-            result = _execute_single_step(step.agent, step.action, step_obj=step, language=language)
+            result = _execute_single_step(
+                step.agent,
+                step.action,
+                step_obj=step,
+                language=language,
+                semantic_memory=semantic_memory,
+            )
             results.append(f"Step {step_num}: {result['result']}")
             agents_used.append(result.get('agent_used', step.agent))
             
@@ -360,6 +387,28 @@ def _run_multi_step_task(task: str, language: Optional[str] = None) -> dict[str,
         return {"success": False, "result": f"Multi-step planning error: {str(e)[:500]}", "agent_used": "planner"}
 
 
+def _run_single_step_with_optional_semantic(
+    task: str,
+    language: Optional[str],
+    semantic_memory: Optional[SemanticMemory],
+) -> dict[str, Any]:
+    """Keep backward-compatible call signatures for monkeypatched tests."""
+    if semantic_memory is None:
+        return run_single_step_task(task, language=language)
+    return run_single_step_task(task, language=language, semantic_memory=semantic_memory)
+
+
+def _run_multi_step_with_optional_semantic(
+    task: str,
+    language: Optional[str],
+    semantic_memory: Optional[SemanticMemory],
+) -> dict[str, Any]:
+    """Keep backward-compatible call signatures for monkeypatched tests."""
+    if semantic_memory is None:
+        return _run_multi_step_task(task, language=language)
+    return _run_multi_step_task(task, language=language, semantic_memory=semantic_memory)
+
+
 def _observe_completed_task(task: str, user_id: Optional[str], context: Optional[dict], result: dict[str, Any]) -> list[Any]:
     """Record a successful task with the behavior tracker."""
     if not result.get("success") or not user_id:
@@ -373,12 +422,37 @@ def _observe_completed_task(task: str, user_id: Optional[str], context: Optional
         return []
 
 
-def run_single_step_task(task: str, language: Optional[str] = None) -> dict[str, Any]:
+def _store_semantic_task(
+    semantic_memory: Optional[SemanticMemory],
+    task: str,
+    result: dict[str, Any],
+) -> None:
+    """Best-effort persistence of task outcome in semantic memory."""
+    if semantic_memory is None:
+        return
+    try:
+        semantic_memory.add_task(
+            task=task,
+            result=str(result.get("result") or ""),
+            extra={
+                "agent_used": str(result.get("agent_used") or "unknown"),
+                "success": bool(result.get("success")),
+            },
+        )
+    except Exception:
+        logger.exception("Failed to store semantic task memory")
+
+
+def run_single_step_task(
+    task: str,
+    language: Optional[str] = None,
+    semantic_memory: Optional[SemanticMemory] = None,
+) -> dict[str, Any]:
     """
     Route and execute a single-step task. Returns dict with success, result, agent_used.
     """
     agent = _route_task(task)
-    return _execute_single_step(agent, task, language=language)
+    return _execute_single_step(agent, task, language=language, semantic_memory=semantic_memory)
 
 
 def run_task(
@@ -391,22 +465,27 @@ def run_task(
     Route and execute a task (single or multi-step). Returns dict with success, result, agent_used.
     """
     clear_stop()
+    semantic_memory: Optional[SemanticMemory] = None
+    if SEMANTIC_MEMORY_AVAILABLE and user_id is not None:
+        semantic_memory = SemanticMemory(user_id=str(user_id))
     try:
         from core.task_planner import _is_multi_step_task
         
         if _is_multi_step_task(task):
             logger.info("Detected multi-step task: %s", task[:80])
-            result = _run_multi_step_task(task, language=language)
+            result = _run_multi_step_with_optional_semantic(task, language, semantic_memory)
         else:
             logger.info("Executing single-step task: %s", task[:80])
-            result = run_single_step_task(task, language=language)
+            result = _run_single_step_with_optional_semantic(task, language, semantic_memory)
         result["new_patterns"] = _observe_completed_task(task, user_id, context, result)
+        _store_semantic_task(semantic_memory, task, result)
         return result
 
     except ImportError:
         logger.warning("Task planner not available, using single-step execution")
-        result = run_single_step_task(task, language=language)
+        result = _run_single_step_with_optional_semantic(task, language, semantic_memory)
         result["new_patterns"] = _observe_completed_task(task, user_id, context, result)
+        _store_semantic_task(semantic_memory, task, result)
         return result
     except Exception as e:
         logger.exception("Task routing failed")
@@ -424,6 +503,7 @@ def run_task_with_langgraph(
     State flows: task -> plan -> execute -> result.
     """
     clear_stop()
+    semantic_memory = SemanticMemory(user_id=str(user_id)) if (SEMANTIC_MEMORY_AVAILABLE and user_id is not None) else None
     try:
         from typing import TypedDict
         from langgraph.graph import StateGraph, START, END
@@ -444,9 +524,9 @@ def run_task_with_langgraph(
         def execute_task_node(state: State) -> State:
             """Execute task using appropriate method (single or multi-step)."""
             if state.get("is_multi_step", False):
-                out = _run_multi_step_task(state["task"], language=language)
+                out = _run_multi_step_with_optional_semantic(state["task"], language, semantic_memory)
             else:
-                out = run_single_step_task(state["task"], language=language)
+                out = _run_single_step_with_optional_semantic(state["task"], language, semantic_memory)
             
             return {
                 "success": out["success"], 
@@ -477,6 +557,7 @@ def run_task_with_langgraph(
             "agent_used": final["agent_used"]
         }
         result["new_patterns"] = _observe_completed_task(task, user_id, context, result)
+        _store_semantic_task(semantic_memory, task, result)
         return result
     except ImportError:
         return run_task(task, language=language, user_id=user_id, context=context)
