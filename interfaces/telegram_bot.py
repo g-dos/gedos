@@ -10,7 +10,7 @@ import json
 import logging
 from pathlib import Path
 import secrets
-from typing import Optional
+from typing import Any, Optional
 from collections import defaultdict
 from time import perf_counter
 from time import time
@@ -71,6 +71,11 @@ from core.security import (
 from core.watchers.idle_watcher import record_user_input
 from tools.ax_tree import get_ax_tree
 from tools.voice_output import send_voice_response, text_to_speech_safe
+try:
+    from core.memory_semantic import SemanticMemory, SEMANTIC_MEMORY_AVAILABLE
+except Exception:
+    SemanticMemory = None  # type: ignore[assignment]
+    SEMANTIC_MEMORY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +99,7 @@ _pending_delete_data_confirmation: set[int] = set()
 _unauthorized_chat_log_at: dict[str, float] = {}
 _generated_pairing_code: Optional[str] = None
 _pattern_index_per_user: dict[int, list[str]] = {}
+_semantic_memory_cache: dict[str, Any] = {}
 
 # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
 _rate_limit_tracker: dict[int, list[float]] = defaultdict(list)
@@ -126,6 +132,36 @@ def _looks_like_shell_command(payload: str) -> bool:
         return False
     low = line.lower()
     return any(low.startswith(p) for p in _SHELL_SAFE_PREFIXES) or low in ("ls", "pwd", "whoami", "date")
+
+
+def _get_semantic_memory(chat_id: Optional[int]) -> Optional[Any]:
+    """Return cached semantic memory handle for a chat when available."""
+    if not SEMANTIC_MEMORY_AVAILABLE or chat_id is None:
+        return None
+    key = str(chat_id)
+    cached = _semantic_memory_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        mem = SemanticMemory(user_id=key)
+    except Exception:
+        logger.exception("Failed to initialize semantic memory for chat_id=%s", key)
+        return None
+    _semantic_memory_cache[key] = mem
+    return mem
+
+
+def _save_semantic_conversation(chat_id: Optional[int], role: str, content: Optional[str]) -> None:
+    """Best-effort semantic memory logging for Telegram conversations."""
+    if not content:
+        return
+    mem = _get_semantic_memory(chat_id)
+    if mem is None:
+        return
+    try:
+        mem.add_conversation(role=role, content=content)
+    except Exception:
+        logger.exception("Failed to save semantic conversation for chat_id=%s", chat_id)
 
 
 def _check_rate_limit(user_id: int) -> bool:
@@ -913,11 +949,14 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     payload = text[5:].strip() if text.lower().startswith("/task") else text
+    _save_semantic_conversation(chat_id, "user", payload)
     if not payload:
         await update.message.reply_text(t("usage_task", lang))
+        _save_semantic_conversation(chat_id, "assistant", t("usage_task", lang))
         return
     if _task_status == "running":
         await update.message.reply_text(t("task_already_running", lang))
+        _save_semantic_conversation(chat_id, "assistant", t("task_already_running", lang))
         return
 
     uid = _user_id(update)
@@ -933,6 +972,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         tree = get_ax_tree(max_buttons=25, max_text_fields=10)
         reply = _format_ax_tree(tree, lang)
         await update.message.reply_text(reply)
+        _save_semantic_conversation(chat_id, "assistant", reply)
         await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply)
@@ -955,6 +995,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _task_status = "idle"
             reply = t("clicked_button", lang) if ok else t("button_not_found", lang, button=btn_name)
             await update.message.reply_text(reply)
+            _save_semantic_conversation(chat_id, "assistant", reply)
             await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
             if uid is not None:
                 add_conversation(str(uid), payload, reply)
@@ -967,26 +1008,34 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         permission_action = get_command_permission_action(payload, user_id=str(chat_id) if chat_id is not None else None)
         if permission_action == "block":
             _task_status = "idle"
-            await update.message.reply_text(t("permission_blocked", lang))
+            blocked_msg = t("permission_blocked", lang)
+            await update.message.reply_text(blocked_msg)
+            _save_semantic_conversation(chat_id, "assistant", blocked_msg)
             return
         if permission_action == "confirm" or legacy_destructive:
             if not await _prompt_permission_confirmation(update, lang, payload):
                 _task_status = "idle"
-                await update.message.reply_text(t("permission_request_denied", lang))
+                denied_msg = t("permission_request_denied", lang)
+                await update.message.reply_text(denied_msg)
+                _save_semantic_conversation(chat_id, "assistant", denied_msg)
                 return
         if _task_cancelled or is_stop_requested():
             _task_status = "idle"
-            await update.message.reply_text(t("task_cancelled", lang))
+            cancelled_msg = t("task_cancelled", lang)
+            await update.message.reply_text(cancelled_msg)
+            _save_semantic_conversation(chat_id, "assistant", cancelled_msg)
             return
         try:
             result = run_shell(payload)
         except SecurityError as exc:
             _task_status = "idle"
             await update.message.reply_text(str(exc))
+            _save_semantic_conversation(chat_id, "assistant", str(exc))
             return
         _task_status = "idle"
         reply = _format_terminal_result(result, lang)
         await update.message.reply_text(reply)
+        _save_semantic_conversation(chat_id, "assistant", reply)
         await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
@@ -1011,7 +1060,9 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             progress_msg = await update.message.reply_text(_format_demo_plan(plan))
             if not await _confirm_plan(uid, progress_msg, lang):
                 _task_status = "idle"
-                await progress_msg.edit_text(t("dry_run_cancelled", lang))
+                cancelled_msg = t("dry_run_cancelled", lang)
+                await progress_msg.edit_text(cancelled_msg)
+                _save_semantic_conversation(chat_id, "assistant", cancelled_msg)
                 return
         try:
             if _task_cancelled or is_stop_requested():
@@ -1026,6 +1077,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _task_status = "idle"
             reply = t("multi_step_execution_error", lang, err=str(e)[:300])
             await progress_msg.edit_text(reply)
+            _save_semantic_conversation(chat_id, "assistant", reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
                 memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
@@ -1052,6 +1104,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _task_status = "idle"
             reply = t("execution_error", lang, err=str(e)[:300])
             await progress_msg.edit_text(reply)
+            _save_semantic_conversation(chat_id, "assistant", reply)
             if uid is not None:
                 add_conversation(str(uid), payload, reply[:500])
                 memory_add_task(description=payload, status="failed", agent_used="orchestrator", result=reply[:500], user_id=str(chat_id) if chat_id is not None else None)
@@ -1061,6 +1114,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(reply) > 4000:
             reply = reply[:4000] + t("truncated_suffix", lang)
         await progress_msg.edit_text(reply)
+        _save_semantic_conversation(chat_id, "assistant", reply)
         await _maybe_send_voice_response(context, chat_id, _voice_task_summary(reply, lang), lang)
         if uid is not None:
             add_conversation(str(uid), payload, reply[:500])
@@ -1364,6 +1418,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         payload = transcribed.strip()
         lang = _user_lang(update, payload)  # Update lang from transcribed text
+        _save_semantic_conversation(chat_id, "user", f"[voice] {payload}")
 
         if uid is not None:
             add_conversation(str(uid), f"[voice] {payload}", None)
@@ -1557,6 +1612,7 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
 
         lang = get_user_language(str(user_id)) or "en"
         result = run_task(task, language=lang)
+        _save_semantic_conversation(user_id, "user", f"[SCHEDULED] {task}")
         
         # Store conversation
         add_conversation(str(user_id), f"[SCHEDULED] {task}", str(result.get('result', t("generic_completed", lang))))
@@ -1579,6 +1635,7 @@ async def _execute_task_autonomously(task: str, user_id: int) -> dict:
                 message = t("scheduled_task_completed", lang, task=task, result=result.get("result", t("generic_completed", lang))[:500])
             else:
                 message = t("scheduled_task_failed", lang, task=task, result=result.get("result", t("unknown_error", lang))[:500])
+            _save_semantic_conversation(user_id, "assistant", message)
             if get_voice_output(str(user_id)):
                 await send_voice_response(bot, user_id, _voice_task_summary(message, lang), lang)
             else:
@@ -1638,8 +1695,10 @@ async def _send_copilot_suggestion(context: ContextTypes.DEFAULT_TYPE, user_id: 
     """Send a Copilot suggestion message to a user."""
     lang = get_user_language(str(user_id)) or "en"
     if _voice_enabled(user_id):
+        _save_semantic_conversation(user_id, "assistant", message)
         await send_voice_response(context.bot, user_id, message, lang)
         return
+    _save_semantic_conversation(user_id, "assistant", message)
     await context.bot.send_message(chat_id=user_id, text=message)
 
 
@@ -1767,8 +1826,12 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(t("input_too_long", lang, max=_MAX_MESSAGE_CHARS))
         return
     question = text[4:].strip() if text.lower().startswith("/ask") else text
+    chat_id = _chat_id(update)
+    _save_semantic_conversation(chat_id, "user", question)
     if not question:
-        await update.message.reply_text(t("usage_ask", lang))
+        usage_msg = t("usage_ask", lang)
+        await update.message.reply_text(usage_msg)
+        _save_semantic_conversation(chat_id, "assistant", usage_msg)
         return
     from core.llm import complete
     reply = complete(question, max_tokens=1024, language=lang)
@@ -1777,7 +1840,8 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(reply) > 4000:
         reply = reply[:4000] + t("truncated_suffix", lang)
     await update.message.reply_text(reply)
-    await _maybe_send_voice_response(context, _chat_id(update), reply, lang)
+    _save_semantic_conversation(chat_id, "assistant", reply)
+    await _maybe_send_voice_response(context, chat_id, reply, lang)
 
 
 async def _copilot_job(context: ContextTypes.DEFAULT_TYPE) -> None:
