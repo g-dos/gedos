@@ -14,6 +14,8 @@ It executes tasks, watches context, and acts proactively across terminal, web, v
 Unlike generic chat assistants, Gedos is local-first, privacy-aware, and macOS-native by design.
 You can run it in CLI, Telegram, MCP, or webhook modes.
 
+![Gedos Crow](docs/assets/gedos-crow.png)
+
 ## Quick Start
 
 ```bash
